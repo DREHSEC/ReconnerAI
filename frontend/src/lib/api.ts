@@ -271,6 +271,8 @@ export interface AIStatus {
   hunter_waf_minutes?: number
   exec_enabled?: boolean
   exec_timeout_seconds?: number
+  browser_enabled?: boolean
+  browser_timeout_seconds?: number
   hunter?: HunterStatus
 }
 
@@ -358,7 +360,7 @@ export const agent = {
   leads: (targetId: string, status = '') =>
     req<AgentLead[]>(`/targets/${targetId}/agent/leads${status ? `?status=${encodeURIComponent(status)}` : ''}`),
   triageLead: (targetId: string, leadId: string, status: 'confirmed' | 'dismissed' | 'pending') =>
-    req<{ id: string; status: string; report?: string }>(`/targets/${targetId}/agent/leads/${leadId}`, {
+    req<{ id: string; status: string; report?: string; task_id?: string; modules?: string[]; verify_error?: string }>(`/targets/${targetId}/agent/leads/${leadId}`, {
       method: 'POST', body: JSON.stringify({ status }),
     }),
   leadReport: (targetId: string, leadId: string) =>
@@ -377,6 +379,7 @@ export interface AgentLead {
   playbook: string
   status: string
   created_at: string
+  verify_task_id?: string
 }
 
 export interface UpdateInfo {

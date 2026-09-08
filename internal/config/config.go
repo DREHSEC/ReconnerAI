@@ -337,8 +337,12 @@ type Config struct {
 	AIHunterWAFMinutes   int  `json:"ai_hunter_waf_minutes"`
 	// AIExecEnabled gives copilot/hunt a bash exec tool inside the container.
 	// The 24/7 hunter never gets it. Hosts in the command must be in Reconner scope.
-	AIExecEnabled         bool `json:"ai_exec_enabled"`
-	AIExecTimeoutSeconds  int  `json:"ai_exec_timeout_seconds"`
+	AIExecEnabled        bool `json:"ai_exec_enabled"`
+	AIExecTimeoutSeconds int  `json:"ai_exec_timeout_seconds"`
+	// AIBrowserEnabled gives copilot/hunt an Obscura session (JS-capable in-scope
+	// browser). The 24/7 hunter never gets it. Navigation is scope-checked.
+	AIBrowserEnabled        bool `json:"ai_browser_enabled"`
+	AIBrowserTimeoutSeconds int  `json:"ai_browser_timeout_seconds"`
 
 	// AuthzMode bounds the two-identity BOLA/IDOR/BFLA engine + deep authenticated
 	// crawl: "safe"|"balanced"(default)|"deep". AuthzDestructive gates cross-user
@@ -455,6 +459,9 @@ func (c *Config) NormalizeAI() {
 	}
 	if c.AIExecTimeoutSeconds <= 0 {
 		c.AIExecTimeoutSeconds = 45
+	}
+	if c.AIBrowserTimeoutSeconds <= 0 {
+		c.AIBrowserTimeoutSeconds = 45
 	}
 	m := strings.ToLower(strings.TrimSpace(c.AIModel))
 	if m == "" || strings.HasPrefix(m, "claude") || strings.HasPrefix(m, "grok") {
@@ -583,18 +590,18 @@ func defaultConfig() *Config {
 		LogLevel:           "info",
 		// Empty preserves each scanner/tool's existing default identity. Operators
 		// can set a deployment-wide value or override it per target.
-		ScanUserAgent: "",
-		ScanHeaders:   map[string]string{},
-		CSRFSecret:    "change-me-csrf-secret-32-bytes!!",
-		EnableSQLmap:  false, // heavy proof pass is explicit opt-in
-		SQLiTimeBased: true,  // statistical time-based SQLi (linear-scaling proof)
-		NucleiVerify:  true,  // route nuclei sqli/xss/redirect hits through the verifier
-		NucleiExtraTargets: true,  // scan discovered parameterized URLs, not just site roots
-		NucleiDAST:         false, // parameter-fuzzing templates are explicit opt-in
-		NucleiMaxSurfaces:  8000,  // cap canonical nuclei surfaces per target (post-dedup safety bound)
-		NucleiMaxPerHost:   2000,  // cap canonical surfaces contributed by any single host
-		ScanWatchdogHours:  24,    // base watchdog floor; scheduler adds adaptive headroom for large targets
-		EnableDAST:         true,  // native context-aware DAST (XSS/SQLi) over all insertion points
+		ScanUserAgent:           "",
+		ScanHeaders:             map[string]string{},
+		CSRFSecret:              "change-me-csrf-secret-32-bytes!!",
+		EnableSQLmap:            false, // heavy proof pass is explicit opt-in
+		SQLiTimeBased:           true,  // statistical time-based SQLi (linear-scaling proof)
+		NucleiVerify:            true,  // route nuclei sqli/xss/redirect hits through the verifier
+		NucleiExtraTargets:      true,  // scan discovered parameterized URLs, not just site roots
+		NucleiDAST:              false, // parameter-fuzzing templates are explicit opt-in
+		NucleiMaxSurfaces:       8000,  // cap canonical nuclei surfaces per target (post-dedup safety bound)
+		NucleiMaxPerHost:        2000,  // cap canonical surfaces contributed by any single host
+		ScanWatchdogHours:       24,    // base watchdog floor; scheduler adds adaptive headroom for large targets
+		EnableDAST:              true,  // native context-aware DAST (XSS/SQLi) over all insertion points
 		AIEnabled:               true,
 		AIModel:                 "GLM-5.3-Flash",
 		AIBaseURLField:          "https://litellm.合.xyz/v1",
@@ -614,10 +621,12 @@ func defaultConfig() *Config {
 		AIHunterWAFMinutes:      30,
 		AIExecEnabled:           true,
 		AIExecTimeoutSeconds:    45,
-		AuthzMode:        "balanced", // two-identity BOLA: deep auth crawl + read/write differential
-		AuthzDestructive: false,      // cross-user DELETE stays opt-in
-		Workers:          workers,    // auto-scaled to host CPU (floors = previous fixed defaults)
-		Limits:           limits,     // auto-scaled to host CPU/RAM
+		AIBrowserEnabled:        true,
+		AIBrowserTimeoutSeconds: 45,
+		AuthzMode:               "balanced", // two-identity BOLA: deep auth crawl + read/write differential
+		AuthzDestructive:        false,      // cross-user DELETE stays opt-in
+		Workers:                 workers,    // auto-scaled to host CPU (floors = previous fixed defaults)
+		Limits:                  limits,     // auto-scaled to host CPU/RAM
 	}
 }
 
@@ -746,6 +755,20 @@ func (c *Config) applyEnvOverrides(raw []byte) {
 		if v := strings.TrimSpace(os.Getenv("AI_EXEC_TIMEOUT")); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				c.AIExecTimeoutSeconds = n
+			}
+		}
+	}
+	if !jsonHasKey(raw, "ai_browser_enabled") {
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("AI_BROWSER"))); v != "" {
+			c.AIBrowserEnabled = v == "true" || v == "1" || v == "on" || v == "yes"
+		} else {
+			c.AIBrowserEnabled = true
+		}
+	}
+	if !jsonHasKey(raw, "ai_browser_timeout_seconds") {
+		if v := strings.TrimSpace(os.Getenv("AI_BROWSER_TIMEOUT")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				c.AIBrowserTimeoutSeconds = n
 			}
 		}
 	}

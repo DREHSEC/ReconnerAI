@@ -209,7 +209,7 @@ type Scheduler struct {
 	queue     chan string
 	cancelMap map[string]context.CancelFunc
 	mu        sync.RWMutex
-	running map[string]bool
+	running   map[string]bool
 	// taskTargets mirrors running so admission can enforce MaxScansPerTarget
 	// without racing on a database status transition that has not committed yet.
 	taskTargets map[string]string
@@ -577,6 +577,19 @@ func (s *Scheduler) CreateTask(targetID string, modules []string, priority int) 
 // so a target's assets scan individually instead of the whole target at once.
 func (s *Scheduler) CreateScopedTask(targetID string, modules []string, priority int, scopeOverride string) (*models.Task, error) {
 	return s.createTask(targetID, modules, priority, "", scopeOverride, true)
+}
+
+// CreateLeadVerifyTask enqueues a URL-scoped verify for an operator-confirmed
+// hunter lead. replan is false so we do not expand into js_analysis/param
+// discovery — the lead already names the endpoint.
+func (s *Scheduler) CreateLeadVerifyTask(targetID string, modules []string, scopeOverride string) (*models.Task, error) {
+	if strings.TrimSpace(scopeOverride) == "" {
+		return nil, fmt.Errorf("lead verify requires a URL")
+	}
+	if len(modules) == 0 {
+		modules = []string{ModuleVerify}
+	}
+	return s.createTask(targetID, modules, 8, "lead_verify", scopeOverride, false)
 }
 
 // CreateTaskTyped is CreateTask with an explicit task TYPE, used to tag

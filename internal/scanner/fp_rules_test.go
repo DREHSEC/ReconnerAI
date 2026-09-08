@@ -69,6 +69,12 @@ func TestTriageStates(t *testing.T) {
 	if ValidTriageState("garbage") {
 		t.Error("garbage must be rejected")
 	}
+	if !TriagePromotesFinding(StateConfirmed) || !TriagePromotesFinding(StateAcceptedRisk) {
+		t.Fatal("confirm/accept should promote")
+	}
+	if TriagePromotesFinding(StateFalsePos) || TriagePromotesFinding(StateNew) {
+		t.Fatal("decline/new must not promote")
+	}
 }
 
 func TestFalsePositiveHints(t *testing.T) {

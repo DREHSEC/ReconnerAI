@@ -265,6 +265,7 @@ The initial `.env` controls the host-facing bootstrap values:
 | `AI_BASE_URL` | Inference proxy base URL (`…/v1`) | `https://litellm.合.xyz/v1` |
 | `AI_MODEL` | Copilot model id | `GLM-5.3-Flash` |
 | `AI_ENABLED` | Turn the copilot on (`true`/`false`) | `true` |
+| `AI_BROWSER` | Copilot Obscura browser (`true`/`false`) | `true` |
 
 Persistent scanner settings live in `/data/config.json`. Important controls
 include worker counts, target/resource ceilings, request rate, per-module URL
@@ -272,7 +273,7 @@ caps, Nuclei surface limits, SQLi timing/sqlmap options, passive intelligence
 API keys, the optional LiteLLM copilot (`ai_enabled`, model, iteration cap) and update-check settings. Environment-provided secrets override file
 values where supported; never commit `.env` or a populated config file.
 
-The copilot is on in the Compose stack. It talks to the LiteLLM proxy (`GLM-5.3-Flash` by default), can read recon data, enqueue existing scan modules, send HTTP to every host that is already a Reconner target or asset, and run a **container shell** (`exec`) for local toolchain and in-scope CLIs. Hosts in that command are scope-checked the same way as `http_request`; cloud metadata is blocked; `/data` is off limits. The 24/7 hunter does not get `exec`. Confirmed findings still only come from Reconner’s verification engines.
+The copilot is on in the Compose stack. It talks to the LiteLLM proxy (`GLM-5.3-Flash` by default), can read recon data, enqueue existing scan modules, send HTTP to every host that is already a Reconner target or asset, run a **container shell** (`exec`) for local toolchain and in-scope CLIs, and drive **Obscura** (`browser_open` / snapshot / click / fill) for JS-rendered pages. Hosts are scope-checked the same way as `http_request`; cloud metadata is blocked; `/data` is off limits. The 24/7 hunter does not get `exec` or the browser. Operator-confirmed hunter leads enqueue a URL-scoped verify; confirmed findings still only come from Reconner’s verification engines.
 
 Bug-bounty programs that require an identifying User-Agent or program header can
 set deployment-wide defaults in `config.json`:

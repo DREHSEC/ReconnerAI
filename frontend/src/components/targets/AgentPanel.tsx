@@ -357,7 +357,7 @@ export function AgentPanel({ targetId }: { targetId: string }) {
           </button>
           {leadsOpen && (
             <div className="px-4 pb-2 max-h-40 overflow-y-auto space-y-1.5">
-              <p className="text-[10px] text-text-muted">The 24/7 hunter filed these for you to Replay / ask Copilot / Confirm or Dismiss. Confirm does not promote a Reconner finding.</p>
+              <p className="text-[10px] text-text-muted">Hunter leads are not findings. Confirm &amp; verify enqueues a URL-scoped verify (and a matching detector). Reconner’s verifier still has to promote a finding.</p>
               {leads.map(l => {
                 const open = leadFocus === l.id
                 return (
@@ -392,12 +392,16 @@ export function AgentPanel({ targetId }: { targetId: string }) {
                           setLeads(x => x.filter(i => i.id !== l.id))
                           if (r.report) {
                             try { await navigator.clipboard.writeText(r.report) } catch { /* ignore */ }
-                            addToast('success', 'Lead confirmed — disclosure draft copied (not a verified finding)')
+                          }
+                          if (r.verify_error) {
+                            addToast('error', `Lead confirmed, verify did not queue: ${r.verify_error}`)
+                          } else if (r.task_id) {
+                            addToast('success', `Queued ${ (r.modules || ['verify']).join(', ') } on this URL`)
                           } else {
-                            addToast('success', 'Lead confirmed')
+                            addToast('success', 'Lead confirmed — disclosure draft copied (no URL to verify)')
                           }
                         } catch (e) { addToast('error', e instanceof Error ? e.message : 'Failed') }
-                      }}>Confirm</Button>
+                      }}>{l.url ? 'Confirm & verify' : 'Confirm'}</Button>
                       <Button size="sm" variant="ghost" onClick={async () => {
                         try { await agentApi.triageLead(targetId, l.id, 'dismissed'); setLeads(x => x.filter(i => i.id !== l.id)) }
                         catch (e) { addToast('error', e instanceof Error ? e.message : 'Failed') }

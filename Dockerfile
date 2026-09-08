@@ -365,6 +365,25 @@ COPY --from=frontend /app/frontend/dist       /opt/reconner/frontend/dist
 COPY docker/entrypoint.sh                     /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Obscura — JS-capable headless browser for the copilot (not Chromium).
+# Copilot/hunt only; navigation is still gated by Reconner engagement scope.
+ARG TARGETARCH=amd64
+ARG OBSCURA_VERSION=v0.2.2
+RUN set -eu; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "${arch}" in \
+      amd64|x86_64) asset="obscura-x86_64-linux.tar.gz" ;; \
+      arm64|aarch64) asset="obscura-aarch64-linux.tar.gz" ;; \
+      *) echo "BUILD FAILURE: no Obscura binary for TARGETARCH=${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/obscura.tgz "https://github.com/h4ckf0r0day/obscura/releases/download/${OBSCURA_VERSION}/${asset}"; \
+    tar -xzf /tmp/obscura.tgz -C /tmp; \
+    install -m 0755 /tmp/obscura /usr/local/bin/obscura; \
+    if [ -f /tmp/obscura-worker ]; then install -m 0755 /tmp/obscura-worker /usr/local/bin/obscura-worker; fi; \
+    rm -f /tmp/obscura.tgz /tmp/obscura /tmp/obscura-worker; \
+    obscura --version
+
+
 ENV RECON_CONFIG=/data/config.json \
     RECONNER_CHROME=/usr/bin/chromium \
     DATA_DIR=/data \
@@ -381,7 +400,7 @@ ENV RECON_CONFIG=/data/config.json \
 # command is run for real. A missing or broken tool fails the Docker build,
 # never ships silently.
 RUN set -eu; \
-    echo "==> verifying all 30 required tools, plus Chromium and git, are on PATH"; \
+    echo "==> verifying all 30 required tools, plus Chromium, git and Obscura, are on PATH"; \
     MISSING=""; \
     for t in \
       subfinder httpx nuclei katana naabu dnsx alterx asnmap uncover \
@@ -389,7 +408,7 @@ RUN set -eu; \
       gowitness hakrawler puredns scilla shuffledns \
       dirsearch feroxbuster findomain hydra sqlmap uro waymore \
       massdns nmap python3 \
-      chromium git \
+      chromium git obscura \
     ; do \
       if ! command -v "$t" >/dev/null 2>&1; then \
         MISSING="${MISSING} $t"; \

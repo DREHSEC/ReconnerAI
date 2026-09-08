@@ -43,6 +43,8 @@ services:
       AI_HUNTER_ITERATIONS: "${AI_HUNTER_ITERATIONS:-28}"
       AI_EXEC: "${AI_EXEC:-true}"
       AI_EXEC_TIMEOUT: "${AI_EXEC_TIMEOUT:-45}"
+      AI_BROWSER: "${AI_BROWSER:-true}"
+      AI_BROWSER_TIMEOUT: "${AI_BROWSER_TIMEOUT:-45}"
     volumes:
       - reconner-data:/data
     # naabu / nmap raw-socket (SYN) scans need these capabilities. Drop them if

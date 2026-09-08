@@ -193,3 +193,104 @@ func TestNucleiTriageConfirmAndDecline(t *testing.T) {
 		t.Fatalf("rejected nuclei still listed: %+v", cands.Data)
 	}
 }
+
+func TestVulnCandidateConfirmPromotesToFinding(t *testing.T) {
+	h, tid, sid := newAgentHandler(t, true, "k")
+	router := findingsTestRouter(h)
+	vid := uuid.New().String()
+	if _, err := h.db.Exec(`INSERT INTO vuln_findings (id, target_id, type, severity, url, parameter, status, triage)
+		VALUES (?,?,?,?,?,?, 'candidate', '')`, vid, tid, "xss", "high", "https://app.example.test/?q=1", "q"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/targets/"+tid+"/findings/"+vid+"/triage",
+		bytes.NewBufferString(`{"triage":"confirmed"}`))
+	req.AddCookie(&http.Cookie{Name: "recon_session", Value: sid})
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var status, triage string
+	if err := h.db.QueryRow(`SELECT COALESCE(status,''), COALESCE(triage,'') FROM vuln_findings WHERE id=?`, vid).Scan(&status, &triage); err != nil {
+		t.Fatal(err)
+	}
+	if status != "finding" || triage != "confirmed" {
+		t.Fatalf("status=%s triage=%s", status, triage)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/findings?status=finding", nil)
+	req.AddCookie(&http.Cookie{Name: "recon_session", Value: sid})
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	var confirmed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if len(confirmed.Data) != 1 || confirmed.Data[0].ID != vid {
+		t.Fatalf("confirmed list=%+v", confirmed.Data)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/findings?status=candidate", nil)
+	req.AddCookie(&http.Cookie{Name: "recon_session", Value: sid})
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	var cands struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &cands); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range cands.Data {
+		if row.ID == vid {
+			t.Fatal("promoted finding still in Needs Review")
+		}
+	}
+}
+
+func TestConfirmedInboxIncludesLegacyTriageWithoutPromote(t *testing.T) {
+	h, tid, sid := newAgentHandler(t, true, "k")
+	vid := uuid.New().String()
+	if _, err := h.db.Exec(`INSERT INTO vuln_findings (id, target_id, type, severity, url, status, triage)
+		VALUES (?,?,?,?,?, 'candidate', 'confirmed')`, vid, tid, "xss", "high", "https://app.example.test/"); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/findings?status=finding", nil)
+	req.AddCookie(&http.Cookie{Name: "recon_session", Value: sid})
+	rec := httptest.NewRecorder()
+	findingsTestRouter(h).ServeHTTP(rec, req)
+	var confirmed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if len(confirmed.Data) != 1 || confirmed.Data[0].ID != vid {
+		t.Fatalf("legacy confirmed candidate missing from Confirmed: %+v", confirmed.Data)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/findings?status=candidate", nil)
+	req.AddCookie(&http.Cookie{Name: "recon_session", Value: sid})
+	rec = httptest.NewRecorder()
+	findingsTestRouter(h).ServeHTTP(rec, req)
+	var cands struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &cands); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range cands.Data {
+		if row.ID == vid {
+			t.Fatal("legacy confirmed candidate still in Needs Review")
+		}
+	}
+}

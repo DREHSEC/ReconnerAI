@@ -104,8 +104,10 @@ func aiStatusFromConfig(c *config.Config) map[string]any {
 		"hunter_skip_running":   c.AIHunterSkipRunning,
 		"hunter_dead_end_hours":  c.AIHunterDeadEndHours,
 		"hunter_waf_minutes":     c.AIHunterWAFMinutes,
-		"exec_enabled":           c.AIExecEnabled,
-		"exec_timeout_seconds":   c.AIExecTimeoutSeconds,
+		"exec_enabled":             c.AIExecEnabled,
+		"exec_timeout_seconds":     c.AIExecTimeoutSeconds,
+		"browser_enabled":          c.AIBrowserEnabled,
+		"browser_timeout_seconds":  c.AIBrowserTimeoutSeconds,
 	}
 }
 
@@ -186,6 +188,12 @@ func (h *Handler) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			changed = true
 		}
 		if setInt(body, "ai_exec_timeout_seconds", &h.cfg.AIExecTimeoutSeconds, 5, 180) {
+			changed = true
+		}
+		if setBool(body, "ai_browser_enabled", &h.cfg.AIBrowserEnabled) {
+			changed = true
+		}
+		if setInt(body, "ai_browser_timeout_seconds", &h.cfg.AIBrowserTimeoutSeconds, 5, 180) {
 			changed = true
 		}
 	}

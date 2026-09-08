@@ -271,6 +271,13 @@ export default function System() {
                 </button>
                 Container shell
               </label>
+              <label className="flex items-center gap-3 text-sm">
+                <button type="button" onClick={() => setAgentDraft(d => ({ ...d, ai_browser_enabled: d.ai_browser_enabled === 'true' ? 'false' : 'true' }))}
+                  className={cn('relative w-11 h-6 rounded-full shrink-0 transition-colors', agentDraft.ai_browser_enabled === 'true' ? 'bg-accent' : 'bg-surface-3 border border-border')}>
+                  <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', agentDraft.ai_browser_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5')} />
+                </button>
+                Obscura browser
+              </label>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               <AgentField label="Model" hint="LiteLLM / OpenAI model id">
@@ -317,6 +324,9 @@ export default function System() {
               </AgentField>
               <AgentField label="Shell timeout (s)" hint="exec tool wall clock (5–180)">
                 <input type="number" min={5} max={180} className="input font-mono text-xs" value={agentDraft.ai_exec_timeout_seconds ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_exec_timeout_seconds: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Browser timeout (s)" hint="Obscura navigate/click wall clock (5–180)">
+                <input type="number" min={5} max={180} className="input font-mono text-xs" value={agentDraft.ai_browser_timeout_seconds ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_browser_timeout_seconds: e.target.value }))} />
               </AgentField>
             </div>
           </div>
@@ -412,6 +422,8 @@ function agentDraftFrom(ai: AIStatus): Record<string, string> {
     ai_hunter_waf_minutes: String(ai.hunter_waf_minutes ?? 30),
     ai_exec_enabled: (ai.exec_enabled ?? true) ? 'true' : 'false',
     ai_exec_timeout_seconds: String(ai.exec_timeout_seconds ?? 45),
+    ai_browser_enabled: (ai.browser_enabled ?? true) ? 'true' : 'false',
+    ai_browser_timeout_seconds: String(ai.browser_timeout_seconds ?? 45),
   }
 }
 

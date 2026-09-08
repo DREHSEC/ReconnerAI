@@ -37,6 +37,8 @@ type Toolbox struct {
 	limit     *hostLimiter
 	limitOnce sync.Once
 	cfg       *config.Config
+	browsers  map[string]*browserSession
+	browserMu sync.Mutex
 }
 
 func NewToolbox(db *database.DB, sched ScanStarter, box *secret.Box) *Toolbox {
@@ -44,10 +46,10 @@ func NewToolbox(db *database.DB, sched ScanStarter, box *secret.Box) *Toolbox {
 }
 
 func toolDefs(includeStop bool) []ToolDef {
-	return toolDefsFor(includeStop, true)
+	return toolDefsFor(includeStop, true, true)
 }
 
-func toolDefsFor(includeStop, includeExec bool) []ToolDef {
+func toolDefsFor(includeStop, includeExec, includeBrowser bool) []ToolDef {
 	defs := []ToolDef{
 		fn("target_brief", "Summary of the target: scope, scan status, identity count (not secrets), tech/WAF rollup, and counts of hosts, params, findings, candidates, nuclei, monitor diffs.", objectSchema(nil)),
 		fn("list_findings", "Confirmed vulnerability findings (status=finding). Filter by type or severity.", objectSchema(map[string]any{
@@ -123,6 +125,28 @@ func toolDefsFor(includeStop, includeExec bool) []ToolDef {
 			"command": strProp("Shell command (bash -lc)"),
 			"cwd":     strProp("Optional working directory. /data is not allowed."),
 		}, "command")))
+	}
+	if includeBrowser {
+		defs = append(defs,
+			fn("browser_open", "Open an in-scope URL in Obscura (JS-capable headless browser). Scope-checked like http_request. Optional identity_label replays cookies/headers. Returns a snapshot with @eN refs. Not given to the 24/7 hunter.", objectSchema(map[string]any{
+				"url":            strProp("Absolute http/https URL"),
+				"identity_label": strProp("Optional identity label whose session cookies/headers are applied"),
+			}, "url")),
+			fn("browser_snapshot", "Current page URL, title, readable text, and interactive @eN refs. Refs go stale after click/fill/navigate.", objectSchema(nil)),
+			fn("browser_click", "Click an element from the last snapshot (ref like e3) or a CSS selector.", objectSchema(map[string]any{
+				"ref":      strProp("Snapshot ref, e.g. e3"),
+				"selector": strProp("Optional CSS selector instead of ref"),
+			})),
+			fn("browser_fill", "Fill an input from the last snapshot or a CSS selector. Triggers input+change.", objectSchema(map[string]any{
+				"ref":      strProp("Snapshot ref, e.g. e3"),
+				"selector": strProp("Optional CSS selector instead of ref"),
+				"value":    strProp("Text to enter"),
+			}, "value")),
+			fn("browser_eval", "Evaluate a JavaScript expression in the current page. Result is truncated. Do not exfiltrate cookies or Authorization headers.", objectSchema(map[string]any{
+				"expression": strProp("JavaScript expression"),
+			}, "expression")),
+			fn("browser_close", "Close the Obscura session for this target.", objectSchema(nil)),
+		)
 	}
 	if includeStop {
 		defs = append(defs, fn("stop_hunt", "End the hunt loop with a reason.", objectSchema(map[string]any{
@@ -232,6 +256,37 @@ func (t *Toolbox) Dispatch(ctx context.Context, targetID, name, argsJSON string,
 		} else {
 			payload, err = t.execCommand(ctx, targetID, strArg(args, "command"), strArg(args, "cwd"))
 		}
+	case "browser_open":
+		payload, err = t.browserOpen(ctx, targetID, strArg(args, "url"), strArg(args, "identity_label"), e)
+	case "browser_snapshot":
+		if e.Mode == modeAlwaysOn {
+			err = fmt.Errorf("browser is not available to the 24/7 hunter")
+		} else {
+			t.browserMu.Lock()
+			sess := t.browsers[targetID]
+			t.browserMu.Unlock()
+			payload, err = t.browserSnapshot(sess)
+		}
+	case "browser_click":
+		if e.Mode == modeAlwaysOn {
+			err = fmt.Errorf("browser is not available to the 24/7 hunter")
+		} else {
+			payload, err = t.browserAct(ctx, targetID, "browser_click", strArg(args, "ref"), strArg(args, "selector"), "")
+		}
+	case "browser_fill":
+		if e.Mode == modeAlwaysOn {
+			err = fmt.Errorf("browser is not available to the 24/7 hunter")
+		} else {
+			payload, err = t.browserAct(ctx, targetID, "browser_fill", strArg(args, "ref"), strArg(args, "selector"), strArg(args, "value"))
+		}
+	case "browser_eval":
+		if e.Mode == modeAlwaysOn {
+			err = fmt.Errorf("browser is not available to the 24/7 hunter")
+		} else {
+			payload, err = t.browserEval(ctx, targetID, strArg(args, "expression"))
+		}
+	case "browser_close":
+		payload = t.browserClose(targetID)
 	case "stop_hunt":
 		stop = true
 		stopMsg = strArg(args, "summary")

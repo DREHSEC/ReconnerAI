@@ -31,6 +31,17 @@ func ValidTriageState(s string) bool {
 	return false
 }
 
+// TriagePromotesFinding is true when an operator decision means the row should
+// leave Needs Review and appear under Confirmed (status=finding). Decline /
+// new stay candidates until a verifier or a later confirm promotes them.
+func TriagePromotesFinding(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case StateConfirmed, StateAcceptedRisk, StateFixed:
+		return true
+	}
+	return false
+}
+
 // FPScope bounds where a suppression rule applies.
 type FPScope string
 

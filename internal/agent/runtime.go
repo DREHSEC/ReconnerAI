@@ -152,6 +152,8 @@ func (r *Runtime) Status() map[string]any {
 		out["hunter_waf_minutes"] = r.cfg.AIHunterWAFMinutes
 		out["exec_enabled"] = r.cfg.AIExecEnabled
 		out["exec_timeout_seconds"] = r.cfg.AIExecTimeoutSeconds
+		out["browser_enabled"] = r.cfg.AIBrowserEnabled
+		out["browser_timeout_seconds"] = r.cfg.AIBrowserTimeoutSeconds
 	}
 	return out
 }
@@ -475,6 +477,9 @@ func (r *Runtime) release(targetID string) {
 	delete(r.active, targetID)
 	delete(r.runEnv, targetID)
 	r.mu.Unlock()
+	if r.tools != nil {
+		r.tools.CloseBrowser(targetID)
+	}
 }
 
 func (r *Runtime) setRunEnv(targetID string, env CallEnv) {
@@ -502,7 +507,8 @@ func (r *Runtime) loop(ctx context.Context, targetID, threadID, runID, mode stri
 	}
 	includeStop := mode == modeHunt || mode == modeAlwaysOn
 	includeExec := mode != modeAlwaysOn && (r.cfg == nil || r.cfg.AIExecEnabled)
-	defs := toolDefsFor(includeStop, includeExec)
+	includeBrowser := mode != modeAlwaysOn && (r.cfg == nil || r.cfg.AIBrowserEnabled)
+	defs := toolDefsFor(includeStop, includeExec, includeBrowser)
 	system := copilotSystemPrompt
 	switch mode {
 	case modeHunt:

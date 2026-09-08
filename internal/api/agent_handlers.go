@@ -76,7 +76,7 @@ func (h *Handler) programScopeAllows(targetID, rawURL string) error {
 func (h *Handler) handleListLeads(w http.ResponseWriter, r *http.Request) {
 	targetID := mux.Vars(r)["id"]
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	q := `SELECT id, title, body, severity, url, method, status_code, evidence, playbook, status, created_at
+	q := `SELECT id, title, body, severity, url, method, status_code, evidence, playbook, status, created_at, COALESCE(verify_task_id,'')
 		FROM agent_leads WHERE target_id=?`
 	args := []any{targetID}
 	if status != "" {
@@ -91,22 +91,23 @@ func (h *Handler) handleListLeads(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	type lead struct {
-		ID         string `json:"id"`
-		Title      string `json:"title"`
-		Body       string `json:"body"`
-		Severity   string `json:"severity"`
-		URL        string `json:"url"`
-		Method     string `json:"method"`
-		StatusCode int    `json:"status_code"`
-		Evidence   string `json:"evidence"`
-		Playbook   string `json:"playbook"`
-		Status     string `json:"status"`
-		CreatedAt  string `json:"created_at"`
+		ID           string `json:"id"`
+		Title        string `json:"title"`
+		Body         string `json:"body"`
+		Severity     string `json:"severity"`
+		URL          string `json:"url"`
+		Method       string `json:"method"`
+		StatusCode   int    `json:"status_code"`
+		Evidence     string `json:"evidence"`
+		Playbook     string `json:"playbook"`
+		Status       string `json:"status"`
+		CreatedAt    string `json:"created_at"`
+		VerifyTaskID string `json:"verify_task_id,omitempty"`
 	}
 	out := []lead{}
 	for rows.Next() {
 		var x lead
-		if rows.Scan(&x.ID, &x.Title, &x.Body, &x.Severity, &x.URL, &x.Method, &x.StatusCode, &x.Evidence, &x.Playbook, &x.Status, &x.CreatedAt) == nil {
+		if rows.Scan(&x.ID, &x.Title, &x.Body, &x.Severity, &x.URL, &x.Method, &x.StatusCode, &x.Evidence, &x.Playbook, &x.Status, &x.CreatedAt, &x.VerifyTaskID) == nil {
 			out = append(out, x)
 		}
 	}
@@ -140,6 +141,17 @@ func (h *Handler) handleTriageLead(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"id": lid, "status": st}
 	if st == "confirmed" {
 		out["report"] = h.leadReportMarkdown(targetID, lid)
+		var starter agent.LeadVerifyStarter
+		if h.sched != nil {
+			starter = h.sched
+		}
+		taskID, mods, err := agent.EnqueueLeadVerify(r.Context(), h.db, starter, targetID, lid)
+		if err != nil {
+			out["verify_error"] = err.Error()
+		} else if taskID != "" {
+			out["task_id"] = taskID
+			out["modules"] = mods
+		}
 	}
 	h.writeSuccess(w, out)
 }

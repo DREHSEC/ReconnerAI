@@ -30,9 +30,14 @@ func (h *Handler) handleSetFindingTriage(w http.ResponseWriter, r *http.Request)
 		h.writeError(w, http.StatusBadRequest, "invalid triage state (new|confirmed|false_positive|accepted_risk|fixed)")
 		return
 	}
-	res, err := h.db.Exec(
-		`UPDATE vuln_findings SET triage=?, triage_note=? WHERE id=? AND target_id=?`,
-		req.Triage, req.Note, fid, id)
+	q := `UPDATE vuln_findings SET triage=?, triage_note=? WHERE id=? AND target_id=?`
+	if scanner.TriagePromotesFinding(req.Triage) {
+		// Operator Confirm on a Needs Review candidate must promote status so
+		// the Confirmed inbox actually lists it. Triage-only left status=candidate,
+		// so the row vanished from the UI then reappeared on reload.
+		q = `UPDATE vuln_findings SET triage=?, triage_note=?, status='finding' WHERE id=? AND target_id=?`
+	}
+	res, err := h.db.Exec(q, req.Triage, req.Note, fid, id)
 	if err != nil {
 		h.writeError(w, http.StatusInternalServerError, "failed to update triage")
 		return
@@ -611,8 +616,7 @@ func (h *Handler) handleListVulnFindings(w http.ResponseWriter, r *http.Request)
 		args = append(args, vulnType)
 	}
 	if statusFilter != "all" {
-		query += " AND COALESCE(status,'finding') = ?"
-		args = append(args, statusFilter)
+		query += vulnInboxSQL("", statusFilter)
 	}
 	// False-Positive management: a specific triage view (e.g. ?triage=false_positive)
 	// is shown on request; otherwise the working list HIDES findings marked as a
@@ -620,7 +624,7 @@ func (h *Handler) handleListVulnFindings(w http.ResponseWriter, r *http.Request)
 	if tf := r.URL.Query().Get("triage"); tf != "" {
 		query += " AND COALESCE(triage,'') = ?"
 		args = append(args, tf)
-	} else {
+	} else if statusFilter != "finding" && statusFilter != "candidate" {
 		query += " AND COALESCE(triage,'') != 'false_positive'"
 	}
 

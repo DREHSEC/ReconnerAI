@@ -59,8 +59,7 @@ func (h *Handler) handleListAllFindings(w http.ResponseWriter, r *http.Request) 
 		vulnArgs = append(vulnArgs, ownerUID)
 	}
 	if status != "all" {
-		vuln += " AND COALESCE(f.status,'finding') = ?"
-		vulnArgs = append(vulnArgs, status)
+		vuln += vulnInboxSQL("f", status)
 	}
 
 	nucleiArgs := []any{}
@@ -124,4 +123,27 @@ func (h *Handler) handleListAllFindings(w http.ResponseWriter, r *http.Request) 
 		out = append(out, f)
 	}
 	h.writeSuccess(w, out)
+}
+
+// vulnInboxSQL splits operator inboxes. Confirm used to set triage=confirmed
+// without promoting status, so Confirmed (status=finding) stayed empty and
+// Needs Review still listed the row. Treat operator-promoted triage as confirmed
+// even if status was left as candidate.
+func vulnInboxSQL(alias, status string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	st := prefix + "status"
+	tr := prefix + "triage"
+	switch status {
+	case "finding":
+		return " AND COALESCE(" + tr + ",'') != 'false_positive'" +
+			" AND (COALESCE(" + st + ",'finding') = 'finding' OR COALESCE(" + tr + ",'') IN ('confirmed','accepted_risk','fixed'))"
+	case "candidate":
+		return " AND COALESCE(" + st + ",'finding') = 'candidate'" +
+			" AND COALESCE(" + tr + ",'') NOT IN ('confirmed','false_positive','accepted_risk','fixed')"
+	default:
+		return ""
+	}
 }

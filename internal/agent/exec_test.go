@@ -176,13 +176,16 @@ func TestExecRejectsDataCwd(t *testing.T) {
 }
 
 func TestExecNotInHunterToolDefs(t *testing.T) {
-	defs := toolDefsFor(true, false)
+	defs := toolDefsFor(true, false, false)
 	for _, d := range defs {
 		if d.Name == "exec" {
 			t.Fatal("hunter must not receive exec")
 		}
+		if strings.HasPrefix(d.Name, "browser_") {
+			t.Fatal("hunter must not receive browser")
+		}
 	}
-	defs = toolDefsFor(false, true)
+	defs = toolDefsFor(false, true, true)
 	found := false
 	for _, d := range defs {
 		if d.Name == "exec" {

@@ -127,6 +127,7 @@ func RunMigrations(db *DB) error {
 		createAgentHunterNotesTable,
 		createAgentHunterSuppressTable,
 		createAgentLeadsTable,
+		alterAgentLeadsAddVerifyTaskID,
 		alterTargetsAddIncludeScope,
 		alterAgentThreadsCompactSummary,
 		alterAgentThreadsCompactAfter,
@@ -1406,5 +1407,7 @@ CREATE TABLE IF NOT EXISTS agent_leads (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_leads_target ON agent_leads(target_id, status, created_at);
 `
+
+const alterAgentLeadsAddVerifyTaskID = `ALTER TABLE agent_leads ADD COLUMN verify_task_id TEXT DEFAULT '';`
 
 const alterTargetsAddIncludeScope = `ALTER TABLE targets ADD COLUMN include_scope TEXT DEFAULT '';`
