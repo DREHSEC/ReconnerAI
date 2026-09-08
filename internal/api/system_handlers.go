@@ -37,6 +37,7 @@ func (h *Handler) apiKeyFields() []struct {
 		{"quake", "Quake (360)", "token", &c.QuakeAPIKey},
 		{"zoomeye", "ZoomEye", "API key", &c.ZoomEyeAPIKey},
 		{"virustotal", "VirusTotal", "v3 API key", &c.VirusTotalAPIKey},
+		{"xai", "LiteLLM (copilot)", "inference API key (env AI_API_KEY wins)", &c.XAIAPIKeyField},
 	}
 }
 
@@ -63,9 +64,49 @@ func (h *Handler) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]keyState, 0)
 	for _, f := range h.apiKeyFields() {
-		out = append(out, keyState{Name: f.Name, Label: f.Label, Hint: f.Hint, Set: *f.Ptr != "", Masked: maskKey(*f.Ptr)})
+		set, masked := *f.Ptr != "", maskKey(*f.Ptr)
+		if f.Name == "xai" && h.cfg != nil {
+			set = h.cfg.XAIAPIKey() != ""
+			if h.cfg.XAIKeyFromEnv() {
+				masked = maskKey(h.cfg.XAIAPIKey())
+			}
+		}
+		out = append(out, keyState{Name: f.Name, Label: f.Label, Hint: f.Hint, Set: set, Masked: masked})
 	}
-	h.writeSuccess(w, map[string]any{"api_keys": out})
+	ai := map[string]any{"enabled": false, "key_set": false, "key_from_env": false, "model": "GLM-5.3-Flash", "base_url": "https://litellm.合.xyz/v1", "max_iterations": 40}
+	if h.agent != nil {
+		ai = h.agent.Status()
+	} else if h.cfg != nil {
+		ai = aiStatusFromConfig(h.cfg)
+	}
+	h.writeSuccess(w, map[string]any{"api_keys": out, "ai": ai})
+}
+
+func aiStatusFromConfig(c *config.Config) map[string]any {
+	if c == nil {
+		return map[string]any{"enabled": false}
+	}
+	c.NormalizeAI()
+	return map[string]any{
+		"enabled":               c.AIEnabled,
+		"key_set":               c.AIAPIKey() != "",
+		"key_from_env":          c.AIKeyFromEnv(),
+		"model":                 c.AIModel,
+		"base_url":              c.AIBaseURL(),
+		"max_iterations":        c.AIMaxIterations,
+		"max_tokens":            c.AIMaxTokens,
+		"timeout_seconds":       c.AITimeoutSeconds,
+		"http_timeout_seconds":  c.AIHTTPTimeoutSeconds,
+		"http_body_cap":         c.AIHTTPBodyCap,
+		"hunter_http_per_min":   c.AIHunterHTTPPerMin,
+		"hunter_scan_cap":       c.AIHunterScanCap,
+		"hunter_cycle_minutes":  c.AIHunterCycleMinutes,
+		"hunter_skip_running":   c.AIHunterSkipRunning,
+		"hunter_dead_end_hours":  c.AIHunterDeadEndHours,
+		"hunter_waf_minutes":     c.AIHunterWAFMinutes,
+		"exec_enabled":           c.AIExecEnabled,
+		"exec_timeout_seconds":   c.AIExecTimeoutSeconds,
+	}
 }
 
 // handleUpdateSettings applies API-key edits and persists them to config.json.
@@ -84,13 +125,119 @@ func (h *Handler) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			changed = true
 		}
 	}
-	if changed {
+	if v, ok := body["ai_enabled"]; ok && v != nil && h.cfg != nil {
+		s := strings.ToLower(strings.TrimSpace(*v))
+		h.cfg.AIEnabled = s == "true" || s == "1" || s == "on" || s == "yes"
+		changed = true
+	}
+	if v, ok := body["ai_hunter_enabled"]; ok && v != nil && h.cfg != nil {
+		s := strings.ToLower(strings.TrimSpace(*v))
+		h.cfg.AIHunterEnabled = s == "true" || s == "1" || s == "on" || s == "yes"
+		changed = true
+	}
+	if h.cfg != nil {
+		if setStr(body, "ai_model", &h.cfg.AIModel) {
+			changed = true
+		}
+		if setStr(body, "ai_base_url", &h.cfg.AIBaseURLField) {
+			h.cfg.AIBaseURLField = strings.TrimRight(h.cfg.AIBaseURLField, "/")
+			changed = true
+		}
+		if setInt(body, "ai_max_iterations", &h.cfg.AIMaxIterations, 1, 200) {
+			changed = true
+		}
+		if setInt(body, "ai_max_tokens", &h.cfg.AIMaxTokens, 256, 128000) {
+			changed = true
+		}
+		if setInt(body, "ai_timeout_seconds", &h.cfg.AITimeoutSeconds, 15, 600) {
+			changed = true
+		}
+		if setInt(body, "ai_http_timeout_seconds", &h.cfg.AIHTTPTimeoutSeconds, 5, 120) {
+			changed = true
+		}
+		if setInt(body, "ai_http_body_cap", &h.cfg.AIHTTPBodyCap, 1024, 1024*1024) {
+			changed = true
+		}
+		if setInt(body, "ai_hunter_interval_seconds", &h.cfg.AIHunterIntervalSeconds, 15, 86400) {
+			changed = true
+		}
+		if setInt(body, "ai_hunter_iterations", &h.cfg.AIHunterIterations, 1, 200) {
+			changed = true
+		}
+		if setInt(body, "ai_hunter_http_per_min", &h.cfg.AIHunterHTTPPerMin, 1, 600) {
+			changed = true
+		}
+		if setInt(body, "ai_hunter_scan_cap", &h.cfg.AIHunterScanCap, 1, 10) {
+			changed = true
+		}
+		if setInt(body, "ai_hunter_cycle_minutes", &h.cfg.AIHunterCycleMinutes, 1, 120) {
+			changed = true
+		}
+		if setInt(body, "ai_hunter_dead_end_hours", &h.cfg.AIHunterDeadEndHours, 1, 24*30) {
+			changed = true
+		}
+		if setInt(body, "ai_hunter_waf_minutes", &h.cfg.AIHunterWAFMinutes, 1, 24*60) {
+			changed = true
+		}
+		if setBool(body, "ai_hunter_skip_running", &h.cfg.AIHunterSkipRunning) {
+			changed = true
+		}
+		if setBool(body, "ai_exec_enabled", &h.cfg.AIExecEnabled) {
+			changed = true
+		}
+		if setInt(body, "ai_exec_timeout_seconds", &h.cfg.AIExecTimeoutSeconds, 5, 180) {
+			changed = true
+		}
+	}
+	if changed && h.cfg != nil {
+		h.cfg.NormalizeAI()
 		if err := h.cfg.Save(); err != nil {
 			h.writeError(w, http.StatusInternalServerError, "saved in memory but could not persist to config.json: "+err.Error())
 			return
 		}
+		if h.agent != nil {
+			h.agent.ApplyAISettings()
+		}
 	}
 	h.handleGetSettings(w, r)
+}
+
+func setStr(body map[string]*string, key string, dst *string) bool {
+	v, ok := body[key]
+	if !ok || v == nil || dst == nil {
+		return false
+	}
+	*dst = strings.TrimSpace(*v)
+	return true
+}
+
+func setInt(body map[string]*string, key string, dst *int, min, max int) bool {
+	v, ok := body[key]
+	if !ok || v == nil || dst == nil {
+		return false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(*v))
+	if err != nil {
+		return false
+	}
+	if n < min {
+		n = min
+	}
+	if max > 0 && n > max {
+		n = max
+	}
+	*dst = n
+	return true
+}
+
+func setBool(body map[string]*string, key string, dst *bool) bool {
+	v, ok := body[key]
+	if !ok || v == nil || dst == nil {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(*v))
+	*dst = s == "true" || s == "1" || s == "on" || s == "yes"
+	return true
 }
 
 func (h *Handler) handleDashboardStats(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { dashboard, tasks as tasksApi, type DashboardCharts } from '../lib/api'
+import { HunterCard } from '../components/system/HunterCard'
 import { Spinner } from '../components/ui'
 import { cn, timeAgo } from '../lib/utils'
 import type { DashboardStats, Task } from '../types'
@@ -182,6 +183,8 @@ export default function Dashboard() {
           <button onClick={load} className="btn-ghost text-xs" title="Refresh">↻</button>
         </div>
       </div>
+
+      <HunterCard />
 
       {/* Hero KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

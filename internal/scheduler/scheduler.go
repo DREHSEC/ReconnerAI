@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -208,7 +209,7 @@ type Scheduler struct {
 	queue     chan string
 	cancelMap map[string]context.CancelFunc
 	mu        sync.RWMutex
-	running   map[string]bool
+	running map[string]bool
 	// taskTargets mirrors running so admission can enforce MaxScansPerTarget
 	// without racing on a database status transition that has not committed yet.
 	taskTargets map[string]string
@@ -465,13 +466,11 @@ func (s *Scheduler) recoverPendingTasks() {
 // so at worst the single in-flight module is repeated.
 const InterruptedStatus = "interrupted"
 
-// SuspendActive flips every currently-active (running or paused) task to the
-// 'interrupted' state and returns how many were affected. It is called by the
-// service's graceful shutdown path, so an in-progress scan is safely parked
-// across a restart/upgrade instead of being lost or left as an uncancellable
-// zombie. Idempotent (a second call finds nothing still running).
+// suspendActive parks running/paused rows as interrupted. Keep updated_at as
+// last module progress so ResumeTask can skip a phase wedged longer than its
+// module watchdog.
 func suspendActive(db *database.DB) (int, error) {
-	res, err := db.Exec(`UPDATE tasks SET status=?, updated_at=CURRENT_TIMESTAMP
+	res, err := db.Exec(`UPDATE tasks SET status=?
 		WHERE status IN ('running','paused')`, InterruptedStatus)
 	if err != nil {
 		return 0, err
@@ -526,27 +525,39 @@ func (s *Scheduler) SuspendActiveForShutdown() (int, error) {
 // scans were resumed. Runs ONLY in the long-lived serve process (it enqueues onto
 // the worker pool) during service startup.
 func (s *Scheduler) ResumeInterrupted() int {
-	rows, err := s.db.Query(`SELECT id FROM tasks WHERE status=?`, InterruptedStatus)
+	rows, err := s.db.Query(`SELECT id, target_id, COALESCE(type,''), COALESCE(total,0) FROM tasks WHERE status=? ORDER BY total DESC, updated_at DESC`, InterruptedStatus)
 	if err != nil {
 		return 0
 	}
-	var ids []string
+	type parked struct {
+		id, targetID, kind string
+		total              int
+	}
+	var ids []parked
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			ids = append(ids, id)
+		var p parked
+		if err := rows.Scan(&p.id, &p.targetID, &p.kind, &p.total); err == nil {
+			ids = append(ids, p)
 		}
 	}
 	rows.Close()
 
 	resumed := 0
-	for _, id := range ids {
+	seenFull := map[string]bool{}
+	for _, p := range ids {
 		// Retire the parked task to a terminal state ResumeTask accepts, so its row
 		// is a clean record and can never be resumed twice.
-		_, _ = s.db.Exec(`UPDATE tasks SET status='cancelled', finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?`, id)
-		if _, err := s.ResumeTask(id); err != nil {
+		_, _ = s.db.Exec(`UPDATE tasks SET status='cancelled', finished_at=CURRENT_TIMESTAMP WHERE id=?`, p.id)
+		if p.kind == "" || p.kind == "full_scan" {
+			if seenFull[p.targetID] {
+				s.logger.Info("Skipping duplicate interrupted full_scan on resume", "task", p.id, "target", p.targetID)
+				continue
+			}
+			seenFull[p.targetID] = true
+		}
+		if _, err := s.ResumeTask(p.id); err != nil {
 			if err != ErrNothingToResume {
-				s.logger.Warn("Could not auto-resume interrupted scan", "task", id, "err", err)
+				s.logger.Warn("Could not auto-resume interrupted scan", "task", p.id, "err", err)
 			}
 			continue
 		}
@@ -559,13 +570,13 @@ func (s *Scheduler) ResumeInterrupted() int {
 }
 
 func (s *Scheduler) CreateTask(targetID string, modules []string, priority int) (*models.Task, error) {
-	return s.createTask(targetID, modules, priority, "", "")
+	return s.createTask(targetID, modules, priority, "", "", true)
 }
 
 // CreateScopedTask creates a scan pinned to ONE asset's scope (scope_override) —
 // so a target's assets scan individually instead of the whole target at once.
 func (s *Scheduler) CreateScopedTask(targetID string, modules []string, priority int, scopeOverride string) (*models.Task, error) {
-	return s.createTask(targetID, modules, priority, "", scopeOverride)
+	return s.createTask(targetID, modules, priority, "", scopeOverride, true)
 }
 
 // CreateTaskTyped is CreateTask with an explicit task TYPE, used to tag
@@ -574,10 +585,10 @@ func (s *Scheduler) CreateScopedTask(targetID string, modules []string, priority
 // completion hook can tell them apart from a user's manual scan. An empty typeTag
 // keeps the default behaviour (full_scan, or the single module's name).
 func (s *Scheduler) CreateTaskTyped(targetID string, modules []string, priority int, typeTag string) (*models.Task, error) {
-	return s.createTask(targetID, modules, priority, typeTag, "")
+	return s.createTask(targetID, modules, priority, typeTag, "", true)
 }
 
-func (s *Scheduler) createTask(targetID string, modules []string, priority int, typeTag, scopeOverride string) (*models.Task, error) {
+func (s *Scheduler) createTask(targetID string, modules []string, priority int, typeTag, scopeOverride string, replan bool) (*models.Task, error) {
 	// Hold admission read-locked through persistence/enqueue so graceful shutdown
 	// cannot begin between the stopping check and creation of a new pending row.
 	s.mu.RLock()
@@ -599,12 +610,14 @@ func (s *Scheduler) createTask(targetID string, modules []string, priority int, 
 	// is remembered for the task TYPE label (the objective), while the expanded
 	// list is what actually executes. (No-op for the full default set and for
 	// network-only scans, which the planner passes through unchanged.)
+	// Resume of an interrupted scan must NOT replan — that would put a skipped
+	// wedged module (js_analysis) back onto the queue.
 	objective := modules
 	// A watch pass is deliberately snapshot-first: ModuleMonitor must compare
 	// against the PREVIOUS HTTP/JS baseline before http_probe/js_analysis refresh
-	// those rows. The generic capability planner sorts probes before detectors,
-	// which erased status/title/JS changes and made monitoring miss real drift.
-	if typeTag != monitorWatchType {
+	// those rows. Resume must NOT replan — that would put a skipped wedged
+	// module (js_analysis) back onto the queue.
+	if replan && typeTag != monitorWatchType {
 		modules = PlanModules(modules)
 	}
 
@@ -657,10 +670,15 @@ var ErrNothingToResume = fmt.Errorf("nothing to resume: all modules already comp
 func (s *Scheduler) ResumeTask(taskID string) (*models.Task, error) {
 	var targetID, status, modulesJSON, completedJSON string
 	var priority int
+	var currentModule string
+	var updatedAt time.Time
+	var knownSubs int
 	err := s.db.QueryRow(`
-		SELECT target_id, status, modules, COALESCE(completed_modules,'[]'), priority
-		FROM tasks WHERE id = ?
-	`, taskID).Scan(&targetID, &status, &modulesJSON, &completedJSON, &priority)
+		SELECT t.target_id, t.status, t.modules, COALESCE(t.completed_modules,'[]'), t.priority,
+		       COALESCE(t.current_module,''), t.updated_at, COALESCE(tgt.subdomain_count,0)
+		FROM tasks t LEFT JOIN targets tgt ON tgt.id=t.target_id
+		WHERE t.id = ?
+	`, taskID).Scan(&targetID, &status, &modulesJSON, &completedJSON, &priority, &currentModule, &updatedAt, &knownSubs)
 	if err != nil {
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
@@ -672,6 +690,12 @@ func (s *Scheduler) ResumeTask(taskID string) (*models.Task, error) {
 	done := map[string]bool{}
 	for _, m := range models.JSONToStringSlice(completedJSON) {
 		done[m] = true
+	}
+	if currentModule != "" && !done[currentModule] && !updatedAt.IsZero() &&
+		time.Since(updatedAt) > moduleWatchdog(currentModule, knownSubs) {
+		done[currentModule] = true
+		s.logger.Info("Skipping stalled in-flight module on resume",
+			"task", taskID, "module", currentModule, "stuck_for", time.Since(updatedAt).Round(time.Minute))
 	}
 	// A module's completion doesn't necessarily land as a clean prefix of `all`
 	// (a parallel group can finish some of its members and not others), so
@@ -688,7 +712,7 @@ func (s *Scheduler) ResumeTask(taskID string) (*models.Task, error) {
 		return nil, ErrNothingToResume
 	}
 
-	newTask, err := s.CreateTask(targetID, remaining, priority)
+	newTask, err := s.createTask(targetID, remaining, priority, "", "", false)
 	if err != nil {
 		return nil, err
 	}
@@ -1118,6 +1142,38 @@ func effectiveWatchdog(cfg *config.Config, knownSubdomains int) time.Duration {
 	return d
 }
 
+const maxModuleWatchdog = 6 * time.Hour
+
+// moduleWatchdog bounds a single phase so a wedged js_analysis / chromium
+// confirmer cannot sit on the 24–96h scan watchdog. Scaled by known surface
+// size, capped at 6h — skip the phase and continue the pipeline.
+func moduleWatchdog(module string, knownSubdomains int) time.Duration {
+	base := 90 * time.Minute
+	switch module {
+	case ModuleSubdomainEnum:
+		base = 3 * time.Hour
+	case ModuleJSAnalysis, ModuleJSEndpoints, ModuleHeadlessCrawl:
+		base = 2 * time.Hour
+	case ModuleXSS, ModuleSQLi, ModuleNuclei, ModuleDAST, ModuleParamDiscovery:
+		base = 3 * time.Hour
+	}
+	if knownSubdomains > 1000 {
+		extra := time.Duration(knownSubdomains/1000) * 20 * time.Minute
+		if extra > 3*time.Hour {
+			extra = 3 * time.Hour
+		}
+		base += extra
+	}
+	if base > maxModuleWatchdog {
+		base = maxModuleWatchdog
+	}
+	return base
+}
+
+func phaseWatchdogHit(scanCtx, modCtx context.Context) bool {
+	return scanCtx.Err() == nil && errors.Is(modCtx.Err(), context.DeadlineExceeded)
+}
+
 func (s *Scheduler) executeTask(parentCtx context.Context, taskID string) {
 	var targetID, modulesJSON, taskStatus, kind, taskType, scopeOverride string
 	var target struct{ Domain string }
@@ -1426,8 +1482,27 @@ func (s *Scheduler) executeTask(parentCtx context.Context, taskID string) {
 		s.checkMemoryPressure(taskID, logFn)
 
 		// Register a per-phase cancelable context so the operator can SKIP just this
-		// phase (SkipCurrentPhase) without cancelling the whole scan.
+		// phase (SkipCurrentPhase) without cancelling the whole scan. A per-module
+		// watchdog sits on top so a wedged katana/chromium phase cannot hold the
+		// 24–96h scan watchdog.
 		modCtx, finishPhase := s.beginPhase(ctx, taskID)
+		limit := moduleWatchdog(module, knownSubdomains)
+		var cancelLimit context.CancelFunc
+		modCtx, cancelLimit = context.WithTimeout(modCtx, limit)
+		origFinish := finishPhase
+		finishPhase = func() bool {
+			cancelLimit()
+			return origFinish()
+		}
+
+		containsCompleted := func(name string) bool {
+			for _, c := range completedModules {
+				if c == name {
+					return true
+				}
+			}
+			return false
+		}
 
 		// Parallel fast-path: run all not-yet-handled modules in the SAME group
 		// concurrently. Grouping by id keeps group 1 (recon) and group 2
@@ -1462,8 +1537,16 @@ func (s *Scheduler) executeTask(parentCtx context.Context, taskID string) {
 					}(gm)
 				}
 				wg.Wait()
+				timedOut := phaseWatchdogHit(ctx, modCtx)
 				if finishPhase() {
 					logFn("warn", "scheduler", fmt.Sprintf("Phase group %v SKIPPED by operator — continuing to next phase.", group))
+				} else if timedOut {
+					logFn("warn", "scheduler", fmt.Sprintf("Phase group %v exceeded its %s watchdog and was skipped so the scan can continue.", group, limit))
+					for _, gm := range group {
+						if !containsCompleted(gm) {
+							completedModules = append(completedModules, gm)
+						}
+					}
 				}
 				persistCompleted()
 				s.updateTargetStats(targetID)
@@ -1472,10 +1555,18 @@ func (s *Scheduler) executeTask(parentCtx context.Context, taskID string) {
 		}
 
 		err := runPlannedModule(modCtx, module)
+		timedOut := phaseWatchdogHit(ctx, modCtx)
 		if finishPhase() {
 			// Operator skipped this phase: mark it handled (so a resume doesn't
 			// redo it) and move on WITHOUT recording a task error.
 			logFn("warn", "scheduler", fmt.Sprintf("Phase %q SKIPPED by operator — continuing to next phase.", module))
+			completedModules = append(completedModules, module)
+			persistCompleted()
+			s.updateTargetStats(targetID)
+			continue
+		}
+		if timedOut {
+			logFn("warn", module, fmt.Sprintf("Phase exceeded its %s watchdog and was skipped so the scan can continue", limit))
 			completedModules = append(completedModules, module)
 			persistCompleted()
 			s.updateTargetStats(targetID)

@@ -115,6 +115,11 @@ export const targets = {
   delIdentity: (id: string, iid: string) => req<void>(`/targets/${id}/identities/${iid}`, { method: 'DELETE' }),
   validateIdentity: (id: string, iid: string) => req<{ status: string }>(`/targets/${id}/identities/${iid}/validate`, { method: 'POST' }),
   evidence: (id: string, fid: string) => req<{ identity_label: string; request: string; response: string; comparison: string; note: string }[]>(`/targets/${id}/findings/${fid}/evidence`),
+  importScope: (id: string, text: string) =>
+    req<{ format: string; include: string[]; exclude: string[] }>(`/targets/${id}/scope/import`, {
+      method: 'POST', body: JSON.stringify({ text }),
+    }),
+  scope: (id: string) => req<{ include: string[]; exclude: string[] }>(`/targets/${id}/scope`),
   replay: (id: string, body: { method?: string; url: string; body?: string; content_type?: string; identity_id?: string }) =>
     req<{ results: { identity_label: string; status: number; content_type: string; length: number; body: string; verdict: string; timing_ms: number }[]; comparison?: string }>(`/targets/${id}/replay`, { method: 'POST', body: JSON.stringify(body) }),
   objects: (id: string) => req<{ type: string; identifier: string; endpoint: string; param: string; owner: string; source_url: string }[]>(`/targets/${id}/objects`),
@@ -205,7 +210,7 @@ export const findings = {
 export interface AllFinding {
   id: string; target_id: string; domain: string; type: string; severity: string
   url: string; parameter: string; confidence: number; priority: number
-  status: string; evidence: string; created_at: string
+  status: string; evidence: string; created_at: string; source?: string
 }
 
 export const tasks = {
@@ -229,6 +234,86 @@ export interface ToolInstallResult {
   notes?: string; output?: string; message: string
 }
 
+export interface HunterStatus {
+  enabled: boolean
+  alive: boolean
+  current_target?: string
+  current_domain?: string
+  current_playbook?: string
+  last_target?: string
+  last_domain?: string
+  last_playbook?: string
+  last_summary?: string
+  last_at?: string
+  cycles: number
+  watching: number
+  interval_seconds: number
+  iterations: number
+  recent?: { target_id: string; domain: string; playbook: string; summary: string; cycles: number; last_run: string }[]
+}
+
+export interface AIStatus {
+  enabled: boolean
+  key_set: boolean
+  key_from_env: boolean
+  model: string
+  base_url?: string
+  max_iterations: number
+  max_tokens?: number
+  timeout_seconds?: number
+  http_timeout_seconds?: number
+  http_body_cap?: number
+  hunter_http_per_min?: number
+  hunter_scan_cap?: number
+  hunter_cycle_minutes?: number
+  hunter_skip_running?: boolean
+  hunter_dead_end_hours?: number
+  hunter_waf_minutes?: number
+  exec_enabled?: boolean
+  exec_timeout_seconds?: number
+  hunter?: HunterStatus
+}
+
+export interface AgentMessage {
+  id: string
+  thread_id: string
+  role: 'user' | 'assistant' | 'tool' | 'call' | string
+  content: string
+  tool_name?: string
+  tool_call_id?: string
+  created_at: string
+}
+
+export interface AgentThread {
+  id: string
+  target_id: string
+  user_id: number
+  title: string
+  mode: string
+  status: string
+  created_at: string
+  updated_at: string
+  messages: AgentMessage[]
+  hunter_active?: boolean
+  compact_summary?: string
+  compact_after?: string
+  token_prompt?: number
+  token_completion?: number
+  token_context?: number
+  token_budget?: number
+  message_count?: number
+  preview?: string
+  live?: boolean
+}
+
+export interface CompactResult {
+  summary: string
+  before_tokens: number
+  after_tokens: number
+  saved_tokens: number
+  compacted: boolean
+}
+
 export const system = {
   tools: () => req<Record<string, boolean>>('/tools/status'),
   toolCatalog: () => req<ToolCatalogEntry[]>('/tools/catalog'),
@@ -237,9 +322,61 @@ export const system = {
   stats: () => req<Record<string, number>>('/system/stats'),
   updateTemplates: () => req<{ message: string }>('/system/update-templates', { method: 'POST' }),
   updateCheck: (refresh = false) => req<UpdateInfo>(`/system/update-check${refresh ? '?refresh=1' : ''}`),
-  getSettings: () => req<{ api_keys: ApiKeyState[] }>('/system/settings'),
+  getSettings: () => req<{ api_keys: ApiKeyState[]; ai?: AIStatus }>('/system/settings'),
   updateSettings: (patch: Record<string, string>) =>
-    req<{ api_keys: ApiKeyState[] }>('/system/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
+    req<{ api_keys: ApiKeyState[]; ai?: AIStatus }>('/system/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
+  ai: () => req<AIStatus>('/system/ai'),
+  hunter: () => req<HunterStatus>('/system/hunter'),
+}
+
+export const agent = {
+  thread: (targetId: string, threadId = '') =>
+    req<AgentThread>(`/targets/${targetId}/agent/thread${threadId ? `?thread_id=${encodeURIComponent(threadId)}` : ''}`),
+  threads: (targetId: string) => req<AgentThread[]>(`/targets/${targetId}/agent/threads`),
+  createThread: (targetId: string, title = '') =>
+    req<AgentThread>(`/targets/${targetId}/agent/threads`, {
+      method: 'POST', body: JSON.stringify({ title }),
+    }),
+  renameThread: (targetId: string, threadId: string, title: string) =>
+    req<AgentThread>(`/targets/${targetId}/agent/threads/${threadId}`, {
+      method: 'PATCH', body: JSON.stringify({ title }),
+    }),
+  deleteThread: (targetId: string, threadId: string) =>
+    req<{ deleted: boolean }>(`/targets/${targetId}/agent/threads/${threadId}`, { method: 'DELETE' }),
+  compact: (targetId: string, threadId: string) =>
+    req<CompactResult>(`/targets/${targetId}/agent/threads/${threadId}/compact`, { method: 'POST' }),
+  send: (targetId: string, content: string, threadId = '') =>
+    req<{ thread_id: string; run_id: string; mode: string }>(`/targets/${targetId}/agent/messages`, {
+      method: 'POST', body: JSON.stringify({ content, thread_id: threadId }),
+    }),
+  hunt: (targetId: string, hypothesis = '', threadId = '') =>
+    req<{ thread_id: string; run_id: string; mode: string }>(`/targets/${targetId}/agent/hunt`, {
+      method: 'POST', body: JSON.stringify({ hypothesis, thread_id: threadId }),
+    }),
+  cancel: (targetId: string) =>
+    req<{ cancelled: boolean }>(`/targets/${targetId}/agent/cancel`, { method: 'POST' }),
+  leads: (targetId: string, status = '') =>
+    req<AgentLead[]>(`/targets/${targetId}/agent/leads${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+  triageLead: (targetId: string, leadId: string, status: 'confirmed' | 'dismissed' | 'pending') =>
+    req<{ id: string; status: string; report?: string }>(`/targets/${targetId}/agent/leads/${leadId}`, {
+      method: 'POST', body: JSON.stringify({ status }),
+    }),
+  leadReport: (targetId: string, leadId: string) =>
+    req<{ markdown: string }>(`/targets/${targetId}/agent/leads/${leadId}/report`),
+}
+
+export interface AgentLead {
+  id: string
+  title: string
+  body: string
+  severity: string
+  url: string
+  method: string
+  status_code: number
+  evidence: string
+  playbook: string
+  status: string
+  created_at: string
 }
 
 export interface UpdateInfo {

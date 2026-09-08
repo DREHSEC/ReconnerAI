@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/recon-platform/internal/agent"
 	"github.com/recon-platform/internal/auth"
 	"github.com/recon-platform/internal/bounty"
 	"github.com/recon-platform/internal/config"
@@ -26,6 +27,7 @@ type Handler struct {
 	auth    *auth.Auth
 	updates *releaseChecker
 	bounty  *bounty.Service
+	agent   *agent.Runtime
 }
 
 // NewHandler builds the single API runtime used by both the HTTP router and the
@@ -42,7 +44,11 @@ func NewHandler(db *database.DB, hub *websocket.Hub, sched *scheduler.Scheduler,
 	if sched != nil {
 		catalog = sched.BountyCatalog()
 	}
-	return &Handler{
+	var starter agent.ScanStarter
+	if sched != nil {
+		starter = sched
+	}
+	h := &Handler{
 		db:      db,
 		hub:     hub,
 		sched:   sched,
@@ -51,7 +57,10 @@ func NewHandler(db *database.DB, hub *websocket.Hub, sched *scheduler.Scheduler,
 		auth:    authService,
 		updates: newReleaseChecker(),
 		bounty:  catalog,
+		agent:   agent.New(cfg, db, starter, hub),
 	}
+	h.agent.StartHunter()
+	return h
 }
 
 func NewRouter(db *database.DB, hub *websocket.Hub, sched *scheduler.Scheduler, cfg *config.Config, log *logger.Logger) http.Handler {
@@ -152,6 +161,20 @@ func (h *Handler) Router() http.Handler {
 	api.HandleFunc("/targets/{id}/report.pdf", h.requireAuth(h.handleGenerateReportPDF)).Methods("GET")
 	api.HandleFunc("/targets/{id}/report.html", h.requireAuth(h.handleGenerateReportHTML)).Methods("GET")
 	api.HandleFunc("/targets/{id}/graph", h.requireAuth(h.handleAssetGraph)).Methods("GET")
+	api.HandleFunc("/targets/{id}/agent/thread", h.requireAuth(h.handleAgentThread)).Methods("GET")
+	api.HandleFunc("/targets/{id}/agent/threads", h.requireAuth(h.handleAgentThreads)).Methods("GET")
+	api.HandleFunc("/targets/{id}/agent/threads", h.requireAuth(h.handleAgentNewThread)).Methods("POST")
+	api.HandleFunc("/targets/{id}/agent/threads/{tid}/compact", h.requireAuth(h.handleAgentCompact)).Methods("POST")
+	api.HandleFunc("/targets/{id}/agent/threads/{tid}", h.requireAuth(h.handleAgentPatchThread)).Methods("PATCH")
+	api.HandleFunc("/targets/{id}/agent/threads/{tid}", h.requireAuth(h.handleAgentDeleteThread)).Methods("DELETE")
+	api.HandleFunc("/targets/{id}/agent/messages", h.requireAuth(h.handleAgentMessage)).Methods("POST")
+	api.HandleFunc("/targets/{id}/agent/hunt", h.requireAuth(h.handleAgentHunt)).Methods("POST")
+	api.HandleFunc("/targets/{id}/agent/cancel", h.requireAuth(h.handleAgentCancel)).Methods("POST")
+	api.HandleFunc("/targets/{id}/scope", h.requireAuth(h.handleGetScope)).Methods("GET")
+	api.HandleFunc("/targets/{id}/scope/import", h.requireAuth(h.handleImportScope)).Methods("POST")
+	api.HandleFunc("/targets/{id}/agent/leads", h.requireAuth(h.handleListLeads)).Methods("GET")
+	api.HandleFunc("/targets/{id}/agent/leads/{lid}", h.requireAuth(h.handleTriageLead)).Methods("POST")
+	api.HandleFunc("/targets/{id}/agent/leads/{lid}/report", h.requireAuth(h.handleLeadReport)).Methods("GET")
 
 	// Findings
 	api.HandleFunc("/targets/{id}/subdomains", h.requireAuth(h.handleListSubdomains)).Methods("GET")
@@ -187,6 +210,8 @@ func (h *Handler) Router() http.Handler {
 	// System
 	api.HandleFunc("/system/settings", h.requireAuth(h.handleGetSettings)).Methods("GET")
 	api.HandleFunc("/system/settings", h.requireAuth(h.handleUpdateSettings)).Methods("PATCH")
+	api.HandleFunc("/system/ai", h.requireAuth(h.handleAIStatus)).Methods("GET")
+	api.HandleFunc("/system/hunter", h.requireAuth(h.handleHunterStatus)).Methods("GET")
 	api.HandleFunc("/system/stats", h.requireAuth(h.handleSystemStats)).Methods("GET")
 	api.HandleFunc("/system/update-templates", h.requireAuth(h.handleUpdateNucleiTemplates)).Methods("POST")
 	api.HandleFunc("/system/update-check", h.requireAuth(h.handleUpdateCheck)).Methods("GET")

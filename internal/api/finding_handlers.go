@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/recon-platform/internal/models"
@@ -36,12 +37,59 @@ func (h *Handler) handleSetFindingTriage(w http.ResponseWriter, r *http.Request)
 		h.writeError(w, http.StatusInternalServerError, "failed to update triage")
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		h.writeError(w, http.StatusNotFound, "finding not found")
-		return
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		if !h.triageNucleiFinding(id, fid, req.Triage) {
+			h.writeError(w, http.StatusNotFound, "finding not found")
+			return
+		}
 	}
-	h.hub.Broadcast("target_updated", map[string]string{"id": id})
+	h.refreshFindingCount(id)
+	if h.hub != nil {
+		h.hub.Broadcast("target_updated", map[string]string{"id": id})
+	}
 	h.writeSuccess(w, map[string]string{"triage": req.Triage})
+}
+
+func (h *Handler) triageNucleiFinding(targetID, findingID, triage string) bool {
+	var templateID string
+	err := h.db.QueryRow(`SELECT template_id FROM nuclei_findings WHERE id=? AND target_id=?`, findingID, targetID).Scan(&templateID)
+	if err != nil || templateID == "" {
+		return false
+	}
+	ver := nucleiVerificationFor(triage)
+	res, err := h.db.Exec(`UPDATE nuclei_findings SET verification=? WHERE target_id=? AND template_id=?`,
+		ver, targetID, templateID)
+	if err != nil {
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
+}
+
+func nucleiVerificationFor(triage string) string {
+	switch strings.ToLower(strings.TrimSpace(triage)) {
+	case scanner.StateConfirmed, scanner.StateFixed:
+		return "verified"
+	case scanner.StateFalsePos:
+		return "rejected"
+	case scanner.StateAcceptedRisk:
+		return "accepted"
+	default:
+		return "unverified"
+	}
+}
+
+func (h *Handler) refreshFindingCount(targetID string) {
+	var n int
+	_ = h.db.QueryRow(`
+		SELECT
+			(SELECT COUNT(DISTINCT template_id) FROM nuclei_findings WHERE target_id = ? AND COALESCE(verification,'unverified') != 'rejected') +
+			(SELECT COUNT(*) FROM backup_findings WHERE target_id = ?) +
+			(SELECT COUNT(*) FROM open_redirect_findings WHERE target_id = ? AND COALESCE(status,'finding')='finding') +
+			(SELECT COUNT(*) FROM vuln_findings WHERE target_id = ? AND COALESCE(status,'finding')='finding' AND COALESCE(triage,'') != 'false_positive')
+	`, targetID, targetID, targetID, targetID).Scan(&n)
+	_, _ = h.db.Exec(`UPDATE targets SET finding_count=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`, n, targetID)
 }
 
 func (h *Handler) handleListSubdomains(w http.ResponseWriter, r *http.Request) {
@@ -386,6 +434,7 @@ func (h *Handler) handleListOpenRedirects(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) handleListNucleiFindings(w http.ResponseWriter, r *http.Request) {
 	id := mux.Vars(r)["id"]
+	_ = scanner.ScrubNucleiCmdiFPs(h.db, id)
 	severity := r.URL.Query().Get("severity")
 	search := r.URL.Query().Get("search")
 
@@ -402,6 +451,7 @@ func (h *Handler) handleListNucleiFindings(w http.ResponseWriter, r *http.Reques
 	inner := `SELECT id, target_id, template_id, template_name, severity, matched_url, description, tags, meta,
 		COALESCE(curl_command,'') AS curl_command, COALESCE(request,'') AS request,
 		COALESCE(response,'') AS response, created_at,
+		COALESCE(verification,'unverified') AS verification,
 		COUNT(*) OVER (PARTITION BY template_id) AS affected_count,
 		ROW_NUMBER() OVER (PARTITION BY template_id ORDER BY LENGTH(matched_url) ASC, created_at DESC) AS rn
 		FROM nuclei_findings WHERE target_id = ? AND COALESCE(verification,'unverified') != 'rejected'`
@@ -425,7 +475,7 @@ func (h *Handler) handleListNucleiFindings(w http.ResponseWriter, r *http.Reques
 		SUBSTR(COALESCE(curl_command,''),1,4000),
 		SUBSTR(COALESCE(request,''),1,4000),
 		SUBSTR(COALESCE(response,''),1,4000),
-		created_at, affected_count
+		created_at, affected_count, verification
 		FROM (` + inner + `) WHERE rn = 1
 		ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
 		         affected_count DESC, created_at DESC LIMIT 500`
@@ -443,7 +493,7 @@ func (h *Handler) handleListNucleiFindings(w http.ResponseWriter, r *http.Reques
 		var tagsJSON, metaJSON string
 		err := rows.Scan(&f.ID, &f.TargetID, &f.TemplateID, &f.TemplateName,
 			&f.Severity, &f.MatchedURL, &f.Description, &tagsJSON, &metaJSON,
-			&f.CurlCommand, &f.Request, &f.Response, &f.CreatedAt, &f.AffectedCount)
+			&f.CurlCommand, &f.Request, &f.Response, &f.CreatedAt, &f.AffectedCount, &f.Verification)
 		if err == nil {
 			f.Tags = models.JSONToStringSlice(tagsJSON)
 			f.Meta = models.JSONToMap(metaJSON)

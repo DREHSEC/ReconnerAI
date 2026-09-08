@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/recon-platform/internal/config"
 	"github.com/recon-platform/internal/database"
@@ -152,5 +153,91 @@ func TestResumeInterruptedNothingLeft(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("task count=%d, want 1 (no empty resume spawned)", count)
+	}
+}
+
+func TestResumeInterruptedDedupsFullScan(t *testing.T) {
+	s := newTestScheduler(t)
+	if _, err := s.db.Exec(`INSERT INTO targets (id, domain) VALUES ('tgt','example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	mods := models.StringSliceToJSON([]string{"http_probe", "js_analysis", "xss"})
+	done := models.StringSliceToJSON([]string{"http_probe"})
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if _, err := s.db.Exec(`INSERT INTO tasks (id, target_id, type, status, priority, modules, total, completed_modules)
+			VALUES (?, 'tgt', 'full_scan', 'interrupted', 2, ?, 3, ?)`, id, mods, done); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resumed := s.ResumeInterrupted(); resumed != 1 {
+		t.Fatalf("ResumeInterrupted=%d, want 1 (dedup four full_scans)", resumed)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM tasks WHERE target_id='tgt' AND status='pending'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pending resumes=%d, want 1", n)
+	}
+}
+
+func TestResumeSkipsStalledModule(t *testing.T) {
+	s := newTestScheduler(t)
+	if _, err := s.db.Exec(`INSERT INTO targets (id, domain, subdomain_count) VALUES ('tgt','example.com', 7000)`); err != nil {
+		t.Fatal(err)
+	}
+	mods := models.StringSliceToJSON([]string{"http_probe", "js_analysis", "xss"})
+	done := models.StringSliceToJSON([]string{"http_probe"})
+	if _, err := s.db.Exec(`INSERT INTO tasks (id, target_id, type, status, priority, modules, total, completed_modules, current_module, updated_at)
+		VALUES ('task1','tgt','full_scan','interrupted',2,?,3,?, 'js_analysis', datetime('now','-10 hours'))`, mods, done); err != nil {
+		t.Fatal(err)
+	}
+	if resumed := s.ResumeInterrupted(); resumed != 1 {
+		t.Fatalf("ResumeInterrupted=%d, want 1", resumed)
+	}
+	var modsJSON string
+	if err := s.db.QueryRow(`SELECT modules FROM tasks WHERE target_id='tgt' AND status='pending'`).Scan(&modsJSON); err != nil {
+		t.Fatal(err)
+	}
+	got := models.JSONToStringSlice(modsJSON)
+	if len(got) != 1 || got[0] != "xss" {
+		t.Fatalf("resume modules=%v, want [xss] (stalled js_analysis skipped)", got)
+	}
+}
+
+func TestTryStartTaskRespectsMaxScansPerTarget(t *testing.T) {
+	s := newTestScheduler(t)
+	s.cfg.Limits.MaxScansPerTarget = 1
+	s.cfg.Limits.MaxConcurrentTargets = 10
+	if _, err := s.db.Exec(`INSERT INTO targets (id, domain) VALUES ('tgt','example.com')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO tasks (id, target_id, type, status, modules, total) VALUES ('t1','tgt','full_scan','pending','[]',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO tasks (id, target_id, type, status, modules, total) VALUES ('t2','tgt','full_scan','pending','[]',1)`); err != nil {
+		t.Fatal(err)
+	}
+	s.running["t1"] = true
+	s.taskTargets["t1"] = "tgt"
+	s.tryStartTask("t2")
+	s.mu.Lock()
+	_, admitted := s.running["t2"]
+	s.mu.Unlock()
+	if admitted {
+		t.Fatal("second scan for the same target must not start")
+	}
+}
+
+func TestModuleWatchdogBoundsJSAnalysis(t *testing.T) {
+	d := moduleWatchdog(ModuleJSAnalysis, 7046)
+	if d < 2*time.Hour {
+		t.Fatalf("js_analysis watchdog too small: %s", d)
+	}
+	if d > maxModuleWatchdog {
+		t.Fatalf("js_analysis watchdog above cap: %s", d)
+	}
+	if moduleWatchdog(ModuleJSAnalysis, 0) >= d {
+		t.Fatal("large targets should get more js_analysis headroom")
 	}
 }

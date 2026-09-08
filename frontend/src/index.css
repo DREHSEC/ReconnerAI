@@ -160,6 +160,68 @@
     font-family: inherit;
   }
 
+  /* Copilot chat markdown — compact dark console, not light-theme prose. */
+  .md {
+    @apply text-sm leading-relaxed break-words;
+  }
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
+  .md p { margin: 0.4em 0; }
+  .md h1, .md h2, .md h3, .md h4 {
+    @apply text-text-primary font-semibold tracking-tight;
+    margin: 0.85em 0 0.35em;
+    line-height: 1.3;
+  }
+  .md h1 { font-size: 1.05rem; }
+  .md h2 { font-size: 0.95rem; }
+  .md h3, .md h4 { font-size: 0.88rem; }
+  .md ul, .md ol { margin: 0.4em 0; padding-left: 1.2em; }
+  .md ul { list-style: disc; }
+  .md ol { list-style: decimal; }
+  .md li { margin: 0.15em 0; }
+  .md li > p { margin: 0.15em 0; }
+  .md ul.contains-task-list { list-style: none; padding-left: 0.15em; }
+  .md li.task-list-item { list-style: none; }
+  .md input[type='checkbox'] { margin-right: 0.4em; accent-color: var(--accent); }
+  .md strong { @apply text-text-primary font-semibold; }
+  .md em { font-style: italic; }
+  .md del { @apply text-text-muted; text-decoration: line-through; }
+  .md a { @apply text-accent hover:text-accent-hover; text-decoration: underline; text-underline-offset: 2px; }
+  .md hr { border: 0; border-top: 1px solid #1e2530; margin: 0.8em 0; }
+  .md blockquote {
+    margin: 0.5em 0;
+    padding: 0.15em 0 0.15em 0.75em;
+    border-left: 2px solid rgba(34,211,238,.4);
+    @apply text-text-secondary;
+  }
+  .md code {
+    @apply font-mono text-[11px] text-accent-hover;
+    background: rgba(34,211,238,.10);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+  }
+  .md pre {
+    margin: 0.55em 0;
+    padding: 0.65em 0.75em;
+    border-radius: 8px;
+    background: #0a0c10;
+    border: 1px solid #1e2530;
+    overflow-x: auto;
+  }
+  .md pre code {
+    background: none;
+    padding: 0;
+    color: #e8edf4;
+    font-size: 11px;
+    line-height: 1.55;
+    white-space: pre;
+  }
+  .md-table { overflow-x: auto; margin: 0.5em 0; }
+  .md table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 0; }
+  .md th, .md td { border: 1px solid #1e2530; padding: 0.3em 0.55em; text-align: left; }
+  .md th { @apply text-text-primary font-semibold; background: #151a22; }
+  .md tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+
   .reconner-loader { @apply relative inline-grid place-items-center shrink-0 text-accent; }
   .reconner-loader-ring { @apply absolute inset-0 rounded-full border border-current opacity-25; }
   .reconner-loader-ring::before,

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
-import { system, type ApiKeyState, type ToolCatalogEntry } from '../lib/api'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { system, type AIStatus, type ApiKeyState, type ToolCatalogEntry } from '../lib/api'
+import { HunterCard } from '../components/system/HunterCard'
 import { Button, Spinner } from '../components/ui'
 import { cn } from '../lib/utils'
 import { ws } from '../lib/websocket'
@@ -20,8 +21,11 @@ export default function System() {
   const [templateLog, setTemplateLog] = useState<SystemLogLine[]>([])
   const [updatingTemplates, setUpdatingTemplates] = useState(false)
   const [apiKeys, setApiKeys] = useState<ApiKeyState[]>([])
+  const [ai, setAi] = useState<AIStatus | null>(null)
   const [drafts, setDrafts] = useState<Record<string,string>>({})
   const [savingKeys, setSavingKeys] = useState(false)
+  const [agentDraft, setAgentDraft] = useState<Record<string, string>>({})
+  const [savingAgent, setSavingAgent] = useState(false)
   const { addToast } = useUIStore()
   const isAdmin = useAuthStore(s => s.user?.role === 'admin')
   const { info: updateInfo, checking: checkingUpdate, refresh: refreshUpdate, showDetails: showUpdateDetails } = useUpdateCenter()
@@ -32,9 +36,10 @@ export default function System() {
         system.tools(),
         system.toolCatalog().catch(() => [] as ToolCatalogEntry[]),
         system.stats(),
-        system.getSettings().catch(() => ({ api_keys: [] })),
+        system.getSettings().catch(() => ({ api_keys: [] as ApiKeyState[], ai: undefined })),
       ])
-      setTools(t||{}); setCatalog(cat||[]); setStats(s||{}); setApiKeys(ks?.api_keys || [])
+      setTools(t||{}); setCatalog(cat||[]); setStats(s||{}); setApiKeys(ks?.api_keys || []); setAi(ks?.ai || null)
+      if (ks?.ai) setAgentDraft(agentDraftFrom(ks.ai))
     }
     catch { /**/ } finally { setLoading(false) }
   }
@@ -60,6 +65,20 @@ export default function System() {
     }
   }
 
+  const saveAgent = async () => {
+    const patch: Record<string, string> = { ...agentDraft }
+    if (Object.keys(patch).length === 0) { addToast('info', 'No agent changes to save'); return }
+    setSavingAgent(true)
+    try {
+      const res = await system.updateSettings(patch)
+      setAi(res.ai || ai)
+      if (res.ai) setAgentDraft(agentDraftFrom(res.ai))
+      addToast('success', 'Agent settings saved')
+    } catch (e) {
+      addToast('error', e instanceof Error ? e.message : 'Failed to save agent settings')
+    } finally { setSavingAgent(false) }
+  }
+
   const saveKeys = async () => {
     const patch: Record<string,string> = {}
     for (const [k, v] of Object.entries(drafts)) if (v !== undefined) patch[k] = v
@@ -67,7 +86,7 @@ export default function System() {
     setSavingKeys(true)
     try {
       const res = await system.updateSettings(patch)
-      setApiKeys(res.api_keys || []); setDrafts({})
+      setApiKeys(res.api_keys || []); setAi(res.ai || ai); setDrafts({})
       addToast('success', 'API keys saved')
     } catch {
       addToast('error', 'Failed to save API keys')
@@ -212,6 +231,96 @@ export default function System() {
 
       {activeTab === 'integrations' && (
         <section className="animate-fade-in">
+          <div className="card p-4 mb-4 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold">Agent</h2>
+                <p className="text-xs text-text-muted mt-1">
+                  Copilot and 24/7 hunter. Saved to <span className="font-mono">config.json</span> and applied immediately.
+                  {ai?.key_from_env ? ' Inference key is pinned by AI_API_KEY in the environment.' : ' Set the LiteLLM key below if it is not in the environment.'}
+                </p>
+              </div>
+              <Button size="sm" variant="primary" loading={savingAgent} onClick={saveAgent}>Save agent settings</Button>
+            </div>
+            <div className="flex flex-wrap gap-6">
+              <label className="flex items-center gap-3 text-sm">
+                <button type="button" onClick={() => setAgentDraft(d => ({ ...d, ai_enabled: d.ai_enabled === 'true' ? 'false' : 'true' }))}
+                  className={cn('relative w-11 h-6 rounded-full shrink-0 transition-colors', agentDraft.ai_enabled === 'true' ? 'bg-accent' : 'bg-surface-3 border border-border')}>
+                  <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', agentDraft.ai_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5')} />
+                </button>
+                Copilot
+              </label>
+              <label className="flex items-center gap-3 text-sm">
+                <button type="button" onClick={() => setAgentDraft(d => ({ ...d, ai_hunter_enabled: d.ai_hunter_enabled === 'true' ? 'false' : 'true' }))}
+                  className={cn('relative w-11 h-6 rounded-full shrink-0 transition-colors', agentDraft.ai_hunter_enabled === 'true' ? 'bg-accent' : 'bg-surface-3 border border-border')}>
+                  <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', agentDraft.ai_hunter_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5')} />
+                </button>
+                24/7 hunter
+              </label>
+              <label className="flex items-center gap-3 text-sm">
+                <button type="button" onClick={() => setAgentDraft(d => ({ ...d, ai_hunter_skip_running: d.ai_hunter_skip_running === 'true' ? 'false' : 'true' }))}
+                  className={cn('relative w-11 h-6 rounded-full shrink-0 transition-colors', agentDraft.ai_hunter_skip_running === 'true' ? 'bg-accent' : 'bg-surface-3 border border-border')}>
+                  <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', agentDraft.ai_hunter_skip_running === 'true' ? 'translate-x-5' : 'translate-x-0.5')} />
+                </button>
+                Skip targets mid-scan
+              </label>
+              <label className="flex items-center gap-3 text-sm">
+                <button type="button" onClick={() => setAgentDraft(d => ({ ...d, ai_exec_enabled: d.ai_exec_enabled === 'true' ? 'false' : 'true' }))}
+                  className={cn('relative w-11 h-6 rounded-full shrink-0 transition-colors', agentDraft.ai_exec_enabled === 'true' ? 'bg-accent' : 'bg-surface-3 border border-border')}>
+                  <span className={cn('absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform', agentDraft.ai_exec_enabled === 'true' ? 'translate-x-5' : 'translate-x-0.5')} />
+                </button>
+                Container shell
+              </label>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              <AgentField label="Model" hint="LiteLLM / OpenAI model id">
+                <input className="input font-mono text-xs" value={agentDraft.ai_model ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_model: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Base URL" hint="OpenAI-compatible …/v1">
+                <input className="input font-mono text-xs" value={agentDraft.ai_base_url ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_base_url: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Copilot iterations" hint="Tool-use turns per chat/hunt">
+                <input type="number" min={1} max={200} className="input font-mono text-xs" value={agentDraft.ai_max_iterations ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_max_iterations: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Max tokens" hint="Completion cap per model call">
+                <input type="number" min={256} className="input font-mono text-xs" value={agentDraft.ai_max_tokens ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_max_tokens: e.target.value }))} />
+              </AgentField>
+              <AgentField label="LLM timeout (s)" hint="HTTP timeout to LiteLLM">
+                <input type="number" min={15} max={600} className="input font-mono text-xs" value={agentDraft.ai_timeout_seconds ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_timeout_seconds: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Hunter interval (s)" hint="Pause between targets (min 15)">
+                <input type="number" min={15} className="input font-mono text-xs" value={agentDraft.ai_hunter_interval_seconds ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_interval_seconds: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Hunter iterations" hint="Steps in one always-on cycle">
+                <input type="number" min={1} max={200} className="input font-mono text-xs" value={agentDraft.ai_hunter_iterations ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_iterations: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Cycle cap (min)" hint="Wall clock per hunter cycle">
+                <input type="number" min={1} max={120} className="input font-mono text-xs" value={agentDraft.ai_hunter_cycle_minutes ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_cycle_minutes: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Hunter HTTP / min / host" hint="Always-on probe budget">
+                <input type="number" min={1} max={600} className="input font-mono text-xs" value={agentDraft.ai_hunter_http_per_min ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_http_per_min: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Hunter scan modules" hint="Max start_scan modules per cycle">
+                <input type="number" min={1} max={10} className="input font-mono text-xs" value={agentDraft.ai_hunter_scan_cap ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_scan_cap: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Probe timeout (s)" hint="In-scope http_request timeout">
+                <input type="number" min={5} max={120} className="input font-mono text-xs" value={agentDraft.ai_http_timeout_seconds ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_http_timeout_seconds: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Probe body cap (bytes)" hint="Truncated HTTP body to the model">
+                <input type="number" min={1024} className="input font-mono text-xs" value={agentDraft.ai_http_body_cap ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_http_body_cap: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Dead-end suppress (h)" hint="remember(dead_end) lifetime">
+                <input type="number" min={1} className="input font-mono text-xs" value={agentDraft.ai_hunter_dead_end_hours ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_dead_end_hours: e.target.value }))} />
+              </AgentField>
+              <AgentField label="WAF backoff (min)" hint="429/503 host cooldown">
+                <input type="number" min={1} className="input font-mono text-xs" value={agentDraft.ai_hunter_waf_minutes ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_waf_minutes: e.target.value }))} />
+              </AgentField>
+              <AgentField label="Shell timeout (s)" hint="exec tool wall clock (5–180)">
+                <input type="number" min={5} max={180} className="input font-mono text-xs" value={agentDraft.ai_exec_timeout_seconds ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_exec_timeout_seconds: e.target.value }))} />
+              </AgentField>
+            </div>
+          </div>
+          <div className="mb-4"><HunterCard /></div>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
             <div>
               <h2 className="text-sm font-semibold">Passive intelligence providers</h2>
@@ -279,5 +388,39 @@ export default function System() {
 
       {activeTab === 'team' && isAdmin && <div className="animate-fade-in"><UsersAdmin /></div>}
     </div>
+  )
+}
+
+function agentDraftFrom(ai: AIStatus): Record<string, string> {
+  return {
+    ai_enabled: ai.enabled ? 'true' : 'false',
+    ai_hunter_enabled: ai.hunter?.enabled ? 'true' : 'false',
+    ai_hunter_skip_running: (ai.hunter_skip_running ?? true) ? 'true' : 'false',
+    ai_model: ai.model || 'GLM-5.3-Flash',
+    ai_base_url: ai.base_url || '',
+    ai_max_iterations: String(ai.max_iterations ?? 40),
+    ai_max_tokens: String(ai.max_tokens ?? 8192),
+    ai_timeout_seconds: String(ai.timeout_seconds ?? 180),
+    ai_http_timeout_seconds: String(ai.http_timeout_seconds ?? 20),
+    ai_http_body_cap: String(ai.http_body_cap ?? 16384),
+    ai_hunter_interval_seconds: String(ai.hunter?.interval_seconds ?? 90),
+    ai_hunter_iterations: String(ai.hunter?.iterations ?? 28),
+    ai_hunter_http_per_min: String(ai.hunter_http_per_min ?? 20),
+    ai_hunter_scan_cap: String(ai.hunter_scan_cap ?? 2),
+    ai_hunter_cycle_minutes: String(ai.hunter_cycle_minutes ?? 12),
+    ai_hunter_dead_end_hours: String(ai.hunter_dead_end_hours ?? 168),
+    ai_hunter_waf_minutes: String(ai.hunter_waf_minutes ?? 30),
+    ai_exec_enabled: (ai.exec_enabled ?? true) ? 'true' : 'false',
+    ai_exec_timeout_seconds: String(ai.exec_timeout_seconds ?? 45),
+  }
+}
+
+function AgentField({ label, hint, children }: { label: string; hint: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="text-[11px] font-medium text-text-secondary">{label}</span>
+      <div className="mt-1">{children}</div>
+      <span className="block text-[10px] text-text-muted mt-1">{hint}</span>
+    </label>
   )
 }

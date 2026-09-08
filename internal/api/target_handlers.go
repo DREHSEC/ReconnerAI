@@ -918,6 +918,10 @@ func (h *Handler) handleReplay(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusForbidden, "url is out of this target's scope — replay is restricted to the target domain / identity origins to prevent leaking captured sessions")
 		return
 	}
+	if err := h.programScopeAllows(targetID, req.URL); err != nil {
+		h.writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 	spec := scanner.ReplaySpec{Method: req.Method, URL: req.URL, Body: req.Body, ContentType: req.ContentType}
 	scanCtx := scanner.WithTargetRequestIdentity(r.Context(), h.db, h.cfg, targetID)
 	ids := scanner.LoadIdentities(scanCtx, h.db, targetID, secret.New(h.cfg.SessionSecret))

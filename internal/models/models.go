@@ -178,7 +178,8 @@ type NucleiFinding struct {
 	// AffectedCount is how many distinct URLs this same template matched — the
 	// list view collapses one template's many near-identical hits into a single
 	// row and reports the total here (1 unless the template fired on several URLs).
-	AffectedCount int `json:"affected_count"`
+	AffectedCount int    `json:"affected_count"`
+	Verification  string `json:"verification"` // unverified | verified | rejected | accepted
 }
 
 type VulnFinding struct {

@@ -428,6 +428,12 @@ func (s *NucleiScanner) runNucleiProcess(ctx context.Context, targetID string, t
 		if nucleiURLReflectionFP(out.TemplateID, out.Info.Name, out.Info.Tags, out.Request, out.Response) {
 			return
 		}
+		// Command-injection/RCE templates that never produced shell output
+		// (uid=/Directory of/…) are 4xx/5xx error pages, not RCE. Drop before
+		// candidate or finding insert. Time-based/OAST templates are excluded.
+		if nucleiCmdiLacksProof(out.TemplateID, out.Info.Name, out.Info.Tags, out.Request, out.Response) {
+			return
+		}
 		// Static-asset backstop: even if a template self-generates a static or
 		// static-derived URL (e.g. "/app.js" or "/style.css/api/user"), drop it —
 		// a finding on a stylesheet/script/image is the noise class we exclude. The

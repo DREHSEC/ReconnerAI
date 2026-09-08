@@ -34,3 +34,4 @@ config.local.json
 
 # ── docker / env ──
 .env
+NOTES

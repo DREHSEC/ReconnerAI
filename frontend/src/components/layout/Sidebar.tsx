@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { cn } from '../../lib/utils'
 import { useAuthStore } from '../../store/auth'
-import { dashboard } from '../../lib/api'
+import { dashboard, system } from '../../lib/api'
 import { useUIStore } from '../../store/ui'
 import { useUpdateCenter } from './UpdateCenter'
 
@@ -48,22 +48,26 @@ export const Sidebar = () => {
   const [copied, setCopied] = useState<string | null>(null)
   const [targetsN, setTargetsN] = useState(0)
   const [runningN, setRunningN] = useState(0)
+  const [hunterLive, setHunterLive] = useState(false)
   const { mobileNavOpen, setMobileNavOpen } = useUIStore()
   const { info, visible: updateAvailable, showDetails } = useUpdateCenter()
 
   // Light poll for the nav badges (target count + live running-scan count).
   useEffect(() => {
     let alive = true
-    const tick = () => dashboard.stats()
-      .then(s => { if (alive) { setTargetsN(s.targets || 0); setRunningN(s.running_tasks || 0) } })
-      .catch(() => {})
+    const tick = () => {
+      dashboard.stats()
+        .then(s => { if (alive) { setTargetsN(s.targets || 0); setRunningN(s.running_tasks || 0) } })
+        .catch(() => {})
+      system.hunter().then(h => { if (alive) setHunterLive(!!(h.alive && h.enabled)) }).catch(() => {})
+    }
     tick()
     const i = setInterval(tick, 15000)
     return () => { alive = false; clearInterval(i) }
   }, [])
 
   const groups: NavGroup[] = [
-    { label: 'Command center', items: [{ to: '/', label: 'Overview', Icon: Icons.dashboard }] },
+    { label: 'Command center', items: [{ to: '/', label: 'Overview', Icon: Icons.dashboard, badge: hunterLive ? { text: 'LIVE', live: true } : null }] },
     { label: 'Operations', items: [
       { to: '/bounty-programs', label: 'Bounty programs', Icon: Icons.bounty },
       { to: '/targets', label: 'Projects', Icon: Icons.targets, badge: targetsN > 0 ? { text: String(targetsN) } : null },

@@ -80,15 +80,18 @@ export const IdentitiesPanel = ({ targetId }: { targetId: string }) => {
   }
 
   return (
-    <details className="card p-4">
+    <details className={list.length < 2 ? 'card p-4 border-severity-medium/40 bg-severity-medium/[.04]' : 'card p-4'}>
       <summary className="text-sm font-medium cursor-pointer select-none">
-        Identities — cross-identity BOLA {list.length > 0 && <span className="text-accent-hover">({list.length})</span>}
+        Identities — unlock authz hunt
+        {list.length >= 2
+          ? <span className="text-accent-hover"> ({list.length})</span>
+          : <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-severity-medium">needs 2 sessions</span>}
       </summary>
       <div className="mt-3 space-y-3">
         <p className="text-xs text-text-muted">
-          Add ≥2 logged-in users. Mark one <b>baseline</b> (the owner). The IDOR engine will try to read the
-          baseline's objects as the other user and only reports a <b>confirmed BOLA</b> when it succeeds
-          while an unauthenticated request is denied.
+          {list.length < 2
+            ? 'The 24/7 hunter cannot run BOLA/IDOR until you paste two logged-in sessions (victim + attacker). Cookie or Bearer is enough.'
+            : 'Two identities are configured. The IDOR engine tries to read the baseline owner\'s objects as the other user and only reports a confirmed BOLA when it succeeds while unauthenticated is denied.'}
         </p>
 
         {list.length > 0 && (

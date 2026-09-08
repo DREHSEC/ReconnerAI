@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 )
 
 type WorkerConfig struct {
@@ -302,17 +304,41 @@ type Config struct {
 	// sqlmap). Covers GET/POST/JSON insertion points, the class of bugs template
 	// matchers structurally miss. On by default; opt out with "enable_dast": false.
 	EnableDAST bool `json:"enable_dast"`
-	// AIEnabled turns on the autonomous AI orchestrator: a Claude tool-use loop
-	// that drives Reconner's OWN engines (recon/DAST/nuclei/OAST/verify) toward a
-	// proven bug, optionally seeded with an operator hypothesis, and can focus on
-	// Watchtower (monitoring) changes. Off by default — it is active and spends
-	// API tokens. The API key is read from the ANTHROPIC_API_KEY environment
-	// variable ONLY, never from this file (never commit a key to the repo).
+	// AIEnabled turns on the autonomous AI orchestrator: a tool-use loop against
+	// an OpenAI-compatible proxy (LiteLLM by default) that drives Reconner's
+	// engines and can send in-scope HTTP to authorized targets. Off unless a key
+	// is configured; docker-compose can force it on via AI_ENABLED.
 	AIEnabled bool `json:"ai_enabled"`
-	// AIModel is the Claude model id the orchestrator uses. Defaults to the latest
-	// Opus. AIMaxIterations caps the agent loop so a runaway can't burn tokens.
+	// AIModel is the LiteLLM/OpenAI model id. Defaults to GLM-5.3-Flash.
+	// AIMaxIterations caps the agent loop so a runaway can't burn tokens.
 	AIModel         string `json:"ai_model"`
 	AIMaxIterations int    `json:"ai_max_iterations"`
+	// AIBaseURLField is the OpenAI-compatible base URL (…/v1). Env AI_BASE_URL wins.
+	AIBaseURLField string `json:"ai_base_url"`
+	// XAIAPIKeyField is the persisted inference key (System → Integrations).
+	// Env AI_API_KEY / LITELLM_API_KEY / XAI_API_KEY win when set.
+	XAIAPIKeyField string `json:"xai_api_key"`
+	// AIHunterEnabled runs a 24/7 background hunter across every target.
+	// AIHunterIntervalSeconds is the pause between picking the next target.
+	// AIHunterIterations caps one always-on cycle (separate from copilot turns).
+	AIHunterEnabled         bool `json:"ai_hunter_enabled"`
+	AIHunterIntervalSeconds int  `json:"ai_hunter_interval_seconds"`
+	AIHunterIterations      int  `json:"ai_hunter_iterations"`
+	// Copilot/hunter knobs that used to be hardcoded constants. 0 ⇒ NormalizeAI default.
+	AIMaxTokens          int  `json:"ai_max_tokens"`
+	AITimeoutSeconds     int  `json:"ai_timeout_seconds"`
+	AIHTTPTimeoutSeconds int  `json:"ai_http_timeout_seconds"`
+	AIHTTPBodyCap        int  `json:"ai_http_body_cap"`
+	AIHunterHTTPPerMin   int  `json:"ai_hunter_http_per_min"`
+	AIHunterScanCap      int  `json:"ai_hunter_scan_cap"`
+	AIHunterCycleMinutes int  `json:"ai_hunter_cycle_minutes"`
+	AIHunterSkipRunning  bool `json:"ai_hunter_skip_running"`
+	AIHunterDeadEndHours int  `json:"ai_hunter_dead_end_hours"`
+	AIHunterWAFMinutes   int  `json:"ai_hunter_waf_minutes"`
+	// AIExecEnabled gives copilot/hunt a bash exec tool inside the container.
+	// The 24/7 hunter never gets it. Hosts in the command must be in Reconner scope.
+	AIExecEnabled         bool `json:"ai_exec_enabled"`
+	AIExecTimeoutSeconds  int  `json:"ai_exec_timeout_seconds"`
 
 	// AuthzMode bounds the two-identity BOLA/IDOR/BFLA engine + deep authenticated
 	// crawl: "safe"|"balanced"(default)|"deep". AuthzDestructive gates cross-user
@@ -328,6 +354,9 @@ type Config struct {
 // Save marshals the config back to the file it was loaded from (0600), so
 // settings edited at runtime — e.g. API keys entered in the System page —
 // persist across restarts. No-op with an error if the path is unknown.
+// SetPath sets the on-disk path Save() writes to (tests and first-boot).
+func (c *Config) SetPath(p string) { c.path = p }
+
 func (c *Config) Save() error {
 	if c.path == "" {
 		return fmt.Errorf("config path unknown; cannot save")
@@ -342,10 +371,98 @@ func (c *Config) Save() error {
 	return os.WriteFile(c.path, data, 0600)
 }
 
-// AnthropicAPIKey returns the Claude API key, sourced ONLY from the environment
-// (never persisted in config.json, which lives in a public repo).
-func (c *Config) AnthropicAPIKey() string {
-	return os.Getenv("ANTHROPIC_API_KEY")
+// AIAPIKey returns the inference proxy key. Environment wins.
+func (c *Config) AIAPIKey() string {
+	for _, k := range []string{"AI_API_KEY", "LITELLM_API_KEY", "XAI_API_KEY"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	if c == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.XAIAPIKeyField)
+}
+
+// XAIAPIKey is the historical name for AIAPIKey.
+func (c *Config) XAIAPIKey() string { return c.AIAPIKey() }
+
+// AIKeyFromEnv reports whether an inference key is coming from the environment.
+func (c *Config) AIKeyFromEnv() bool {
+	for _, k := range []string{"AI_API_KEY", "LITELLM_API_KEY", "XAI_API_KEY"} {
+		if strings.TrimSpace(os.Getenv(k)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// XAIKeyFromEnv is the historical name for AIKeyFromEnv.
+func (c *Config) XAIKeyFromEnv() bool { return c.AIKeyFromEnv() }
+
+// AIBaseURL returns the OpenAI-compatible base URL (no trailing slash).
+// A saved config.json value wins so System → Integrations edits persist;
+// AI_BASE_URL is the fallback when the field is empty.
+func (c *Config) AIBaseURL() string {
+	if c != nil {
+		if v := strings.TrimRight(strings.TrimSpace(c.AIBaseURLField), "/"); v != "" {
+			return v
+		}
+	}
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv("AI_BASE_URL")), "/"); v != "" {
+		return v
+	}
+	return "https://litellm.合.xyz/v1"
+}
+
+// NormalizeAI fills agent defaults and remaps retired Claude/Grok stubs.
+func (c *Config) NormalizeAI() {
+	if c.AIMaxIterations <= 0 {
+		c.AIMaxIterations = 40
+	}
+	if c.AIHunterIntervalSeconds <= 0 {
+		c.AIHunterIntervalSeconds = 90
+	}
+	if c.AIHunterIterations <= 0 {
+		c.AIHunterIterations = 28
+	}
+	if c.AIMaxTokens <= 0 {
+		c.AIMaxTokens = 8192
+	}
+	if c.AITimeoutSeconds <= 0 {
+		c.AITimeoutSeconds = 180
+	}
+	if c.AIHTTPTimeoutSeconds <= 0 {
+		c.AIHTTPTimeoutSeconds = 20
+	}
+	if c.AIHTTPBodyCap <= 0 {
+		c.AIHTTPBodyCap = 16384
+	}
+	if c.AIHunterHTTPPerMin <= 0 {
+		c.AIHunterHTTPPerMin = 20
+	}
+	if c.AIHunterScanCap <= 0 {
+		c.AIHunterScanCap = 2
+	}
+	if c.AIHunterCycleMinutes <= 0 {
+		c.AIHunterCycleMinutes = 12
+	}
+	if c.AIHunterDeadEndHours <= 0 {
+		c.AIHunterDeadEndHours = 7 * 24
+	}
+	if c.AIHunterWAFMinutes <= 0 {
+		c.AIHunterWAFMinutes = 30
+	}
+	if c.AIExecTimeoutSeconds <= 0 {
+		c.AIExecTimeoutSeconds = 45
+	}
+	m := strings.ToLower(strings.TrimSpace(c.AIModel))
+	if m == "" || strings.HasPrefix(m, "claude") || strings.HasPrefix(m, "grok") {
+		c.AIModel = "GLM-5.3-Flash"
+	}
+	if strings.TrimSpace(c.AIBaseURLField) == "" {
+		c.AIBaseURLField = "https://litellm.合.xyz/v1"
+	}
 }
 
 // URLLimit returns the SQL LIMIT to use for a module. When MaxURLsPerModule is
@@ -466,24 +583,41 @@ func defaultConfig() *Config {
 		LogLevel:           "info",
 		// Empty preserves each scanner/tool's existing default identity. Operators
 		// can set a deployment-wide value or override it per target.
-		ScanUserAgent:      "",
-		ScanHeaders:        map[string]string{},
-		CSRFSecret:         "change-me-csrf-secret-32-bytes!!",
-		EnableSQLmap:       false,             // heavy proof pass is explicit opt-in
-		SQLiTimeBased:      true,              // statistical time-based SQLi (linear-scaling proof)
-		NucleiVerify:       true,              // route nuclei sqli/xss/redirect hits through the verifier
-		NucleiExtraTargets: true,              // scan discovered parameterized URLs, not just site roots
-		NucleiDAST:         false,             // parameter-fuzzing templates are explicit opt-in
-		NucleiMaxSurfaces:  8000,              // cap canonical nuclei surfaces per target (post-dedup safety bound)
-		NucleiMaxPerHost:   2000,              // cap canonical surfaces contributed by any single host
-		ScanWatchdogHours:  24,                // base watchdog floor; scheduler adds adaptive headroom for large targets
-		EnableDAST:         true,              // native context-aware DAST (XSS/SQLi) over all insertion points
-		AIModel:            "claude-opus-4-8", // latest Opus; used only when AIEnabled and a key is set
-		AIMaxIterations:    40,                // hard cap on the agent loop
-		AuthzMode:          "balanced",        // two-identity BOLA: deep auth crawl + read/write differential
-		AuthzDestructive:   false,             // cross-user DELETE stays opt-in
-		Workers:            workers,           // auto-scaled to host CPU (floors = previous fixed defaults)
-		Limits:             limits,            // auto-scaled to host CPU/RAM
+		ScanUserAgent: "",
+		ScanHeaders:   map[string]string{},
+		CSRFSecret:    "change-me-csrf-secret-32-bytes!!",
+		EnableSQLmap:  false, // heavy proof pass is explicit opt-in
+		SQLiTimeBased: true,  // statistical time-based SQLi (linear-scaling proof)
+		NucleiVerify:  true,  // route nuclei sqli/xss/redirect hits through the verifier
+		NucleiExtraTargets: true,  // scan discovered parameterized URLs, not just site roots
+		NucleiDAST:         false, // parameter-fuzzing templates are explicit opt-in
+		NucleiMaxSurfaces:  8000,  // cap canonical nuclei surfaces per target (post-dedup safety bound)
+		NucleiMaxPerHost:   2000,  // cap canonical surfaces contributed by any single host
+		ScanWatchdogHours:  24,    // base watchdog floor; scheduler adds adaptive headroom for large targets
+		EnableDAST:         true,  // native context-aware DAST (XSS/SQLi) over all insertion points
+		AIEnabled:               true,
+		AIModel:                 "GLM-5.3-Flash",
+		AIBaseURLField:          "https://litellm.合.xyz/v1",
+		AIMaxIterations:         40,
+		AIHunterEnabled:         true,
+		AIHunterIntervalSeconds: 90,
+		AIHunterIterations:      28,
+		AIMaxTokens:             8192,
+		AITimeoutSeconds:        180,
+		AIHTTPTimeoutSeconds:    20,
+		AIHTTPBodyCap:           16384,
+		AIHunterHTTPPerMin:      20,
+		AIHunterScanCap:         2,
+		AIHunterCycleMinutes:    12,
+		AIHunterSkipRunning:     true,
+		AIHunterDeadEndHours:    7 * 24,
+		AIHunterWAFMinutes:      30,
+		AIExecEnabled:           true,
+		AIExecTimeoutSeconds:    45,
+		AuthzMode:        "balanced", // two-identity BOLA: deep auth crawl + read/write differential
+		AuthzDestructive: false,      // cross-user DELETE stays opt-in
+		Workers:          workers,    // auto-scaled to host CPU (floors = previous fixed defaults)
+		Limits:           limits,     // auto-scaled to host CPU/RAM
 	}
 }
 
@@ -503,8 +637,11 @@ func Load() (*Config, error) {
 			if err := os.MkdirAll(filepath.Dir(configPath), 0750); err != nil {
 				return cfg, nil
 			}
+			cfg.applyEnvOverrides(nil)
+			cfg.NormalizeAI()
 			data, _ := json.MarshalIndent(cfg, "", "  ")
 			_ = os.WriteFile(configPath, data, 0600)
+			cfg.ensureDirs()
 			return cfg, nil
 		}
 		return nil, err
@@ -514,7 +651,8 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	cfg.applyEnvOverrides()
+	cfg.applyEnvOverrides(data)
+	cfg.NormalizeAI()
 	cfg.ensureDirs()
 	return cfg, nil
 }
@@ -523,7 +661,7 @@ func Load() (*Config, error) {
 // of being written into config.json — the safe way to configure a deployment
 // whose source lives in a PUBLIC repo (never commit an API key). An env var wins
 // over the file when set.
-func (c *Config) applyEnvOverrides() {
+func (c *Config) applyEnvOverrides(raw []byte) {
 	if v := os.Getenv("RECON_SCAN_USER_AGENT"); v != "" {
 		c.ScanUserAgent = v
 	}
@@ -548,6 +686,81 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("RECON_SHODAN_KEY"); v != "" {
 		c.ShodanAPIKey = v
 	}
+	// Secrets: env always wins so compose/k8s can inject keys without writing them to disk.
+	if v := strings.TrimSpace(os.Getenv("AI_API_KEY")); v != "" {
+		c.XAIAPIKeyField = v
+	} else if v := strings.TrimSpace(os.Getenv("LITELLM_API_KEY")); v != "" {
+		c.XAIAPIKeyField = v
+	}
+	// Operator knobs: config.json wins once the key exists (System UI persist).
+	// Env fills gaps on first boot or older files that never stored the field.
+	if !jsonHasKey(raw, "ai_model") {
+		if v := strings.TrimSpace(os.Getenv("AI_MODEL")); v != "" {
+			c.AIModel = v
+		}
+	}
+	if !jsonHasKey(raw, "ai_base_url") {
+		if v := strings.TrimRight(strings.TrimSpace(os.Getenv("AI_BASE_URL")), "/"); v != "" {
+			c.AIBaseURLField = v
+		}
+	}
+	if !jsonHasKey(raw, "ai_enabled") {
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("AI_ENABLED"))); v != "" {
+			c.AIEnabled = v == "true" || v == "1" || v == "on" || v == "yes"
+		}
+	}
+	if !jsonHasKey(raw, "ai_max_iterations") {
+		if v := strings.TrimSpace(os.Getenv("AI_MAX_ITERATIONS")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				c.AIMaxIterations = n
+			}
+		}
+	}
+	if !jsonHasKey(raw, "ai_hunter_enabled") {
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("AI_HUNTER"))); v != "" {
+			c.AIHunterEnabled = v == "true" || v == "1" || v == "on" || v == "yes"
+		}
+	}
+	if !jsonHasKey(raw, "ai_hunter_interval_seconds") {
+		if v := strings.TrimSpace(os.Getenv("AI_HUNTER_INTERVAL")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 15 {
+				c.AIHunterIntervalSeconds = n
+			}
+		}
+	}
+	if !jsonHasKey(raw, "ai_hunter_iterations") {
+		if v := strings.TrimSpace(os.Getenv("AI_HUNTER_ITERATIONS")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				c.AIHunterIterations = n
+			}
+		}
+	}
+	if !jsonHasKey(raw, "ai_exec_enabled") {
+		if v := strings.ToLower(strings.TrimSpace(os.Getenv("AI_EXEC"))); v != "" {
+			c.AIExecEnabled = v == "true" || v == "1" || v == "on" || v == "yes"
+		} else {
+			c.AIExecEnabled = true
+		}
+	}
+	if !jsonHasKey(raw, "ai_exec_timeout_seconds") {
+		if v := strings.TrimSpace(os.Getenv("AI_EXEC_TIMEOUT")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				c.AIExecTimeoutSeconds = n
+			}
+		}
+	}
+}
+
+func jsonHasKey(raw []byte, key string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	_, ok := m[key]
+	return ok
 }
 
 func (c *Config) ensureDirs() {

@@ -4,6 +4,8 @@ import { targets as targetsApi, findings as findingsApi, tasks as tasksApi, boun
 import { useUIStore } from '../store/ui'
 import { Badge, Button, Spinner, Empty, CopyButton, ErrorBoundary, SkeletonRows } from '../components/ui'
 import { ScanModal } from '../components/targets/ScanModal'
+import { AgentPanel } from '../components/targets/AgentPanel'
+import { IdentitiesPanel } from '../components/targets/IdentitiesPanel'
 import { EvidenceViewer } from '../components/targets/EvidenceViewer'
 import { LiveResults } from '../components/targets/LiveResults'
 import { ws } from '../lib/websocket'
@@ -21,6 +23,9 @@ const isScannableProjectAsset = (asset: Asset) =>
 // working area (Confirmed vs Needs-Review first, then by check type); Activity =
 // change monitoring.
 const TAB_GROUPS = [
+  { group: 'Agent', tabs: [
+    { id: 'agent', label: 'Copilot' },
+  ] },
   { group: 'Assets', tabs: [
     { id: 'subdomains', label: 'Hosts' },
     { id: 'http', label: 'URLs' },
@@ -79,12 +84,12 @@ const TRIAGE_OPTS: { key: string; label: string; cls: string }[] = [
   { key: 'false_positive', label: 'False Positive', cls: 'text-severity-critical border-severity-critical/40 bg-severity-critical/10' },
   { key: 'accepted_risk', label: 'Accept Risk', cls: 'text-severity-medium border-severity-medium/40 bg-severity-medium/10' },
 ]
-function TriageBar({ targetId, finding, onDone }: { targetId: string; finding: VulnFinding; onDone: () => void }) {
+function TriageBar({ targetId, findingId, triage, onDone }: { targetId: string; findingId: string; triage?: string; onDone: () => void }) {
   const [busy, setBusy] = useState('')
-  const cur = finding.triage || ''
+  const cur = triage || ''
   const set = async (t: string) => {
     setBusy(t)
-    try { await findingsApi.setTriage(targetId, finding.id, t); onDone() } catch { /* toast handled globally */ } finally { setBusy('') }
+    try { await findingsApi.setTriage(targetId, findingId, t); onDone() } catch { /* toast handled globally */ } finally { setBusy('') }
   }
   return (
     <div className="flex flex-wrap gap-1 mt-1.5" title="False-Positive triage">
@@ -442,9 +447,32 @@ export default function TargetDetail() {
       else if (t === 'redirects') r = await findingsApi.openRedirects(id)
       else if (t === 'nuclei') r = await findingsApi.nucleiFindings(id)
       else if (t === 'vulns') r = fpView ? await findingsApi.vulnFindings(id, 'all', 'false_positive') : await findingsApi.vulnFindings(id, 'finding')
-      else if (t === 'candidates') r = await findingsApi.vulnFindings(id, 'candidate')
+      else if (t === 'candidates') {
+        const [cands, nuclei] = await Promise.all([
+          findingsApi.vulnFindings(id, 'candidate'),
+          findingsApi.nucleiFindings(id).catch(() => [] as NucleiFinding[]),
+        ])
+        const pendingNuclei = (nuclei || []).filter(n => !n.verification || n.verification === 'unverified')
+        r = [
+          ...(cands || []),
+          ...pendingNuclei.map(n => ({
+            id: n.id,
+            target_id: n.target_id,
+            type: n.template_id,
+            severity: n.severity,
+            url: n.matched_url || n.url,
+            parameter: 'nuclei',
+            payload: '',
+            evidence: n.description,
+            status: 'candidate',
+            source: 'nuclei',
+            created_at: n.created_at,
+          } as VulnFinding)),
+        ]
+      }
       else if (t === 'cameras') r = await findingsApi.ingram(id)
       else if (t === 'monitor') r = await findingsApi.monitoringChanges(id)
+      else if (t === 'agent') { setTabLoading(false); return }
       setData(r || [])
       setVisibleCount(PAGE)
     } catch { setData([]) }
@@ -555,6 +583,8 @@ export default function TargetDetail() {
           {target.scan_status === 'paused' && (
             <button onClick={resumeScan} className="btn-secondary text-sm text-severity-medium">Resume</button>
           )}
+          <button onClick={() => setTab('agent')} className={cn('btn-secondary text-sm', tab === 'agent' && 'border-accent text-accent')}
+            title="Ask the copilot about this target">Copilot</button>
           <button onClick={() => setScanOpen(true)} className="btn-primary text-sm">Scan</button>
         </div>
       </div>
@@ -592,15 +622,16 @@ export default function TargetDetail() {
         {[
           { label: 'Subdomains', value: target.subdomain_count },
           { label: 'Alive', value: target.alive_host_count, color: 'text-severity-low' },
-          { label: 'Findings', value: target.finding_count, color: target.finding_count > 0 ? 'text-severity-high' : undefined },
+          { label: 'Findings', value: target.finding_count, color: target.finding_count > 0 ? 'text-severity-high' : undefined, onClick: () => setTab('candidates') },
           { label: 'Priority', value: target.priority },
           { label: 'Status', value: target.scan_status },
           { label: 'Last Scan', value: target.last_scan_at ? timeAgo(target.last_scan_at) : 'Never' },
         ].map(s => (
-          <div key={s.label} className="card p-3 text-center">
+          <button key={s.label} type="button" onClick={'onClick' in s && s.onClick ? s.onClick : undefined}
+            className={cn('card p-3 text-center', 'onClick' in s && s.onClick ? 'hover:border-accent/40 cursor-pointer' : 'cursor-default')}>
             <p className={cn('text-base font-semibold', s.color || 'text-text-primary')}>{s.value}</p>
             <p className="text-xs text-text-muted">{s.label}</p>
-          </div>
+          </button>
         ))}
       </div>
 
@@ -649,6 +680,8 @@ export default function TargetDetail() {
           </div>
         )}
       </div>
+
+      {id && <IdentitiesPanel targetId={id} />}
 
       <div className={cn('space-y-5', isNetwork && 'order-2')}>
       {/* Monitoring settings */}
@@ -745,7 +778,9 @@ export default function TargetDetail() {
         ))}
       </div>
 
-      {tab !== 'cameras' && (
+      {tab === 'agent' && id && <AgentPanel targetId={id} />}
+
+      {tab !== 'cameras' && tab !== 'agent' && (
       <div className="flex gap-2 items-center px-1 py-2 text-xs text-text-muted flex-wrap">
         {tab === 'vulns' && (
           <button onClick={() => setFpView(v => !v)}
@@ -785,12 +820,27 @@ export default function TargetDetail() {
       </div>
       )}
 
-      <ErrorBoundary>
+      {tab !== 'agent' && <ErrorBoundary>
       <div className="card overflow-hidden" style={{ padding: 0 }}>
         {tabLoading
           ? <div className="py-2"><SkeletonRows rows={8} cols={5} /></div>
           : data.length === 0
-            ? <Empty message={tab === 'cameras' ? 'No cameras/DVRs found by Ingram yet. Run a scan with the Ingram (camera) option enabled.' : 'No data found'} />
+            ? (
+              <div className="p-8 text-center space-y-2">
+                <Empty message={
+                  tab === 'cameras' ? 'No cameras/DVRs found by Ingram yet. Run a scan with the Ingram (camera) option enabled.'
+                    : tab === 'vulns' && !fpView && (target?.finding_count || 0) > 0
+                      ? 'No confirmed findings yet. Nuclei hits wait in Needs Review for Confirm / Decline.'
+                      : tab === 'candidates' ? 'Nothing awaiting review.'
+                      : 'No data found'
+                } />
+                {tab === 'vulns' && !fpView && (target?.finding_count || 0) > 0 && (
+                  <button type="button" onClick={() => setTab('candidates')} className="px-3 py-1.5 rounded border border-accent text-accent text-xs">
+                    Open Needs Review
+                  </button>
+                )}
+              </div>
+            )
             : tab === 'cameras'
             ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 p-4">
@@ -1016,6 +1066,9 @@ export default function TargetDetail() {
                             )}
                           </p>
                           <p className="text-text-muted font-mono text-xs">{n.template_id}</p>
+                          {n.verification && n.verification !== 'unverified' && (
+                            <p className="text-[10px] uppercase tracking-wide text-text-muted mt-0.5">{n.verification}</p>
+                          )}
                         </td>
                         <td className="table-cell max-w-sm">
                           <div className="flex items-center gap-1.5">
@@ -1049,7 +1102,10 @@ export default function TargetDetail() {
                             </details>
                           )}
                         </td>
-                        <td className="table-cell text-xs whitespace-nowrap">{timeAgo(n.created_at)}</td>
+                        <td className="table-cell text-xs whitespace-nowrap align-top">
+                          <div className="text-text-muted">{timeAgo(n.created_at)}</div>
+                          <TriageBar targetId={id!} findingId={n.id} triage={n.verification === 'verified' ? 'confirmed' : n.verification === 'rejected' ? 'false_positive' : n.verification === 'accepted' ? 'accepted_risk' : ''} onDone={() => { loadTab(tab); targetsApi.get(id!).then(setTarget).catch(() => {}) }} />
+                        </td>
                       </tr>
                     ))}
                     {(tab === 'vulns' || tab === 'candidates') && (pageData as VulnFinding[]).map(v => {
@@ -1146,7 +1202,7 @@ export default function TargetDetail() {
                           <button onClick={() => setEvidence({ id: v.id, url: v.url, type: v.type })}
                             className="btn-secondary text-[11px] mb-1">Evidence</button>
                           <div className="text-text-muted">{timeAgo(v.created_at)}</div>
-                          <TriageBar targetId={id!} finding={v} onDone={() => loadTab(tab)} />
+                          <TriageBar targetId={id!} findingId={v.id} triage={v.triage} onDone={() => { loadTab(tab); targetsApi.get(id!).then(setTarget).catch(() => {}) }} />
                         </td>
                       </tr>
                       )
@@ -1185,7 +1241,7 @@ export default function TargetDetail() {
           </div>
         )}
       </div>
-      </ErrorBoundary>
+      </ErrorBoundary>}
       </div>
 
       {scanOpen && (

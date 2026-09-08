@@ -253,6 +253,7 @@ export interface NucleiFinding {
   response: string
   created_at: string
   affected_count?: number
+  verification?: string
 }
 
 export interface AttackPath {
@@ -282,6 +283,7 @@ export interface VulnFinding {
   triage?: string
   triage_note?: string
   created_at: string
+  source?: string
 }
 
 export interface MonitoringChange {

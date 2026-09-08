@@ -656,6 +656,9 @@ func (s *VerifyScanner) Run(ctx context.Context, targetID string, logFn LogFunc)
 	if s.cfg == nil || s.cfg.NucleiVerify {
 		s.verifyNucleiCandidates(ctx, targetID, logFn)
 	}
+	if n := ScrubNucleiCmdiFPs(s.db, targetID); n > 0 {
+		logFn("info", "verify", fmt.Sprintf("Rejected %d nuclei command-injection hit(s) with no shell-output proof.", n))
+	}
 
 	// Correlate/dedup: group findings by root cause (type + endpoint template) so
 	// N affected resources collapse into one root issue (evidence preserved).

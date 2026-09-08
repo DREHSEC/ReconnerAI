@@ -120,6 +120,18 @@ func RunMigrations(db *DB) error {
 		alterAssetsAddMetadata,
 		alterAssetsAddUpdatedAt,
 		createBountyIndexes,
+		createAgentThreadsTable,
+		createAgentMessagesTable,
+		createAgentRunsTable,
+		createAgentHunterStateTable,
+		createAgentHunterNotesTable,
+		createAgentHunterSuppressTable,
+		createAgentLeadsTable,
+		alterTargetsAddIncludeScope,
+		alterAgentThreadsCompactSummary,
+		alterAgentThreadsCompactAfter,
+		alterAgentThreadsTokenPrompt,
+		alterAgentThreadsTokenCompletion,
 	}
 
 	for i, m := range migrations {
@@ -1285,3 +1297,114 @@ CREATE INDEX IF NOT EXISTS idx_candidates_type ON candidates(target_id, type);
 // show a countdown per scan without recomputing it client-side.
 const alterTasksAddEta = `ALTER TABLE tasks ADD COLUMN eta_seconds INTEGER DEFAULT 0;`
 const alterTasksAddModuleEta = `ALTER TABLE tasks ADD COLUMN module_eta_seconds INTEGER DEFAULT 0;`
+
+const createAgentThreadsTable = `
+CREATE TABLE IF NOT EXISTS agent_threads (
+	id TEXT PRIMARY KEY,
+	target_id TEXT NOT NULL,
+	user_id INTEGER NOT NULL DEFAULT 0,
+	title TEXT DEFAULT '',
+	mode TEXT NOT NULL DEFAULT 'chat',
+	status TEXT NOT NULL DEFAULT 'idle',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_threads_target ON agent_threads(target_id);
+`
+
+const alterAgentThreadsCompactSummary = `ALTER TABLE agent_threads ADD COLUMN compact_summary TEXT DEFAULT '';`
+const alterAgentThreadsCompactAfter = `ALTER TABLE agent_threads ADD COLUMN compact_after DATETIME;`
+const alterAgentThreadsTokenPrompt = `ALTER TABLE agent_threads ADD COLUMN token_prompt INTEGER DEFAULT 0;`
+const alterAgentThreadsTokenCompletion = `ALTER TABLE agent_threads ADD COLUMN token_completion INTEGER DEFAULT 0;`
+
+const createAgentMessagesTable = `
+CREATE TABLE IF NOT EXISTS agent_messages (
+	id TEXT PRIMARY KEY,
+	thread_id TEXT NOT NULL,
+	role TEXT NOT NULL,
+	content TEXT NOT NULL DEFAULT '',
+	tool_name TEXT DEFAULT '',
+	tool_call_id TEXT DEFAULT '',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(thread_id, created_at);
+`
+
+const createAgentRunsTable = `
+CREATE TABLE IF NOT EXISTS agent_runs (
+	id TEXT PRIMARY KEY,
+	thread_id TEXT NOT NULL,
+	target_id TEXT NOT NULL,
+	status TEXT NOT NULL,
+	iterations INTEGER DEFAULT 0,
+	error TEXT DEFAULT '',
+	started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	finished_at DATETIME,
+	FOREIGN KEY (thread_id) REFERENCES agent_threads(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_target ON agent_runs(target_id, started_at);
+`
+
+const createAgentHunterStateTable = `
+CREATE TABLE IF NOT EXISTS agent_hunter_state (
+	target_id TEXT PRIMARY KEY,
+	enabled INTEGER NOT NULL DEFAULT 1,
+	last_run DATETIME,
+	last_playbook TEXT DEFAULT '',
+	last_summary TEXT DEFAULT '',
+	cycle_count INTEGER NOT NULL DEFAULT 0,
+	last_finding_count INTEGER NOT NULL DEFAULT 0,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
+);
+`
+
+const createAgentHunterNotesTable = `
+CREATE TABLE IF NOT EXISTS agent_hunter_notes (
+	id TEXT PRIMARY KEY,
+	target_id TEXT NOT NULL,
+	kind TEXT NOT NULL DEFAULT 'lead',
+	content TEXT NOT NULL DEFAULT '',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_hunter_notes_target ON agent_hunter_notes(target_id, created_at);
+`
+
+const createAgentHunterSuppressTable = `
+CREATE TABLE IF NOT EXISTS agent_hunter_suppress (
+	id TEXT PRIMARY KEY,
+	target_id TEXT NOT NULL,
+	url TEXT NOT NULL,
+	parameter TEXT NOT NULL DEFAULT '',
+	kind TEXT NOT NULL DEFAULT 'dead_end',
+	until DATETIME NOT NULL,
+	UNIQUE(target_id, url, parameter, kind),
+	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_hunter_suppress_target ON agent_hunter_suppress(target_id, until);
+`
+
+const createAgentLeadsTable = `
+CREATE TABLE IF NOT EXISTS agent_leads (
+	id TEXT PRIMARY KEY,
+	target_id TEXT NOT NULL,
+	title TEXT NOT NULL,
+	body TEXT NOT NULL DEFAULT '',
+	severity TEXT DEFAULT 'medium',
+	url TEXT DEFAULT '',
+	method TEXT DEFAULT '',
+	status_code INTEGER DEFAULT 0,
+	evidence TEXT DEFAULT '',
+	playbook TEXT DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'pending',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_agent_leads_target ON agent_leads(target_id, status, created_at);
+`
+
+const alterTargetsAddIncludeScope = `ALTER TABLE targets ADD COLUMN include_scope TEXT DEFAULT '';`
