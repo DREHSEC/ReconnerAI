@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	transcriptBudget = 80000
-	huntScanWait     = 15 * time.Second
+	transcriptBudget       = 80000
+	hunterTranscriptBudget = 320000 // ~80k tokens: dossier + a handful of tool results
+	huntScanWait           = 15 * time.Second
 )
 
 // Event is broadcast on the websocket hub as type "agent_event".
@@ -334,7 +335,11 @@ func (r *Runtime) start(parent context.Context, targetID string, userID int64, m
 	if r.client == nil {
 		return nil, fmt.Errorf("AI client is not configured")
 	}
-	userContent = clip(userContent, 8000)
+	capN := 8000
+	if mode == modeAlwaysOn {
+		capN = dossierCap
+	}
+	userContent = clip(userContent, capN)
 	if userContent == "" {
 		return nil, fmt.Errorf("message is required")
 	}
@@ -546,7 +551,7 @@ func (r *Runtime) loop(ctx context.Context, targetID, threadID, runID, mode stri
 		}
 		var input []InputItem
 		if mode == modeAlwaysOn {
-			input = buildInput(system, msgs)
+			input = buildInputBudget(system, msgs, hunterTranscriptBudget)
 		} else {
 			input = withCompactMemory(system, summary, msgs)
 		}
@@ -625,9 +630,13 @@ func (r *Runtime) loop(ctx context.Context, targetID, threadID, runID, mode stri
 }
 
 func buildInput(system string, msgs []Message) []InputItem {
+	return buildInputBudget(system, msgs, transcriptBudget)
+}
+
+func buildInputBudget(system string, msgs []Message, budget int) []InputItem {
 	items := []InputItem{{Role: "system", Content: system}}
 	// Drop oldest tool results first when the serialized transcript is too large.
-	budgeted := trimTranscript(msgs, transcriptBudget)
+	budgeted := trimTranscript(msgs, budget)
 	for _, m := range budgeted {
 		switch m.Role {
 		case roleUser:

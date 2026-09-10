@@ -52,6 +52,7 @@ func toolDefs(includeStop bool) []ToolDef {
 func toolDefsFor(includeStop, includeExec, includeBrowser bool) []ToolDef {
 	defs := []ToolDef{
 		fn("target_brief", "Summary of the target: scope, scan status, identity count (not secrets), tech/WAF rollup, and counts of hosts, params, findings, candidates, nuclei, monitor diffs.", objectSchema(nil)),
+		fn("surface_dossier", "Ranked interesting 1% of the recon graph: candidate clusters, authz-shaped objects, JS-only APIs, odd internal hosts, leftovers, watchtower diffs, dead ends, hunter memory. Use this instead of paging list_candidates. Large on purpose.", objectSchema(nil)),
 		fn("list_findings", "Confirmed vulnerability findings (status=finding). Filter by type or severity.", objectSchema(map[string]any{
 			"type":     strProp("Vulnerability class, e.g. xss, sqli, ssrf"),
 			"severity": strProp("critical|high|medium|low|info"),
@@ -202,6 +203,8 @@ func (t *Toolbox) Dispatch(ctx context.Context, targetID, name, argsJSON string,
 	switch name {
 	case "target_brief":
 		payload, err = t.targetBrief(ctx, targetID)
+	case "surface_dossier":
+		payload, err = t.surfaceDossier(ctx, targetID)
 	case "list_findings":
 		payload, err = t.listFindings(ctx, targetID, strArg(args, "type"), strArg(args, "severity"), "finding")
 	case "list_candidates":
@@ -408,6 +411,15 @@ func (t *Toolbox) targetBrief(ctx context.Context, targetID string) (any, error)
 		"exclude": splitStoredScope(exc),
 	}
 	return brief, nil
+}
+
+func (t *Toolbox) surfaceDossier(ctx context.Context, targetID string) (any, error) {
+	if t.db == nil {
+		return nil, fmt.Errorf("database is not available")
+	}
+	pb := pickPlaybook(ctx, t.db, targetID)
+	md := buildSurfaceDossier(ctx, t.db, targetID, pb)
+	return map[string]any{"lane": pb.Name, "reason": pb.Reason, "markdown": md}, nil
 }
 
 func (t *Toolbox) listFindings(ctx context.Context, targetID, typ, severity, status string) (any, error) {
@@ -953,6 +965,9 @@ func (t *Toolbox) flagLead(ctx context.Context, targetID string, a flagLeadArgs)
 	a.Body = strings.TrimSpace(a.Body)
 	if a.Title == "" || a.Body == "" {
 		return nil, fmt.Errorf("title and body are required")
+	}
+	if err := t.rejectFloodLead(ctx, targetID, a); err != nil {
+		return nil, err
 	}
 	if a.Severity == "" {
 		a.Severity = "medium"

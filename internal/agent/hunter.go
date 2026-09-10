@@ -144,7 +144,9 @@ func (r *Runtime) hunterTick(ctx context.Context) {
 		return
 	}
 	pb := pickPlaybook(ctx, r.store.db, id)
-	r.setRunEnv(id, CallEnv{Mode: modeAlwaysOn, Playbook: pb.Name, ScanAllow: pb.ScanModules})
+	var idents int
+	_ = r.store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM identities WHERE target_id=?`, id).Scan(&idents)
+	r.setRunEnv(id, CallEnv{Mode: modeAlwaysOn, Playbook: pb.Name, ScanAllow: hunterScanAllow(pb.ScanModules, idents)})
 	r.hunterMu.Lock()
 	r.hunterLastPick = time.Now()
 	r.hunterSnap.CurrentTarget = id
@@ -156,7 +158,7 @@ func (r *Runtime) hunterTick(ctx context.Context) {
 		Payload: map[string]string{"playbook": pb.Name, "domain": domain, "phase": "start"},
 	})
 
-	user := pb.Brief
+	user := hunterCyclePrompt(ctx, r.store.db, id, pb)
 	_, err := r.start(ctx, id, 0, modeAlwaysOn, user, "")
 	if err != nil {
 		r.finishHunterCycle(id, domain, pb.Name, "could not start: "+err.Error())
