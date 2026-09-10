@@ -57,9 +57,12 @@ func buildSurfaceDossier(ctx context.Context, db *database.DB, targetID string, 
 			' via ' || SUBSTR(COALESCE(endpoint_template,''),1,120) || ' conf=' || COALESCE(confidence,0)
 		FROM hypotheses WHERE target_id=? AND status IN ('HYPOTHESIS','TESTED')
 		ORDER BY confidence DESC LIMIT 12`, targetID))
-	writeDossierSection(&b, "Watchtower diffs", dossierLines(ctx, db, `
-		SELECT change_type || ' ' || SUBSTR(url,1,100) || '  ' || SUBSTR(COALESCE(old_value,''),1,60) || ' → ' || SUBSTR(COALESCE(new_value,''),1,80)
-		FROM monitoring_changes WHERE target_id=? ORDER BY detected_at DESC LIMIT 16`, targetID))
+	buckets := collectPathBuckets(ctx, db, targetID)
+	writeDossierSection(&b, "Object map (resource URL templates — BOLA candidates even without sessions)", formatObjectMap(buckets, 18))
+	common, odd := formatHostRhyme(buckets, 12, 12)
+	writeDossierSection(&b, "Cross-host rhyme (same path on many hosts)", common)
+	writeDossierSection(&b, "Singleton odd paths (only one host — often the real one)", odd)
+	writeDossierSection(&b, "Watchtower diffs (what *changed* — reason about new capability)", watchtowerStory(ctx, db, targetID, 12))
 	writeDossierSection(&b, "Backup files", dossierLines(ctx, db, `
 		SELECT SUBSTR(url,1,180) FROM backup_findings WHERE target_id=? LIMIT 8`, targetID))
 	writeDossierSection(&b, "Admin / debug / graphql paths", dossierLines(ctx, db, `

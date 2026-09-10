@@ -53,6 +53,9 @@ func toolDefsFor(includeStop, includeExec, includeBrowser bool) []ToolDef {
 	defs := []ToolDef{
 		fn("target_brief", "Summary of the target: scope, scan status, identity count (not secrets), tech/WAF rollup, and counts of hosts, params, findings, candidates, nuclei, monitor diffs.", objectSchema(nil)),
 		fn("surface_dossier", "Ranked interesting 1% of the recon graph: candidate clusters, authz-shaped objects, JS-only APIs, odd internal hosts, leftovers, watchtower diffs, dead ends, hunter memory. Use this instead of paging list_candidates. Large on purpose.", objectSchema(nil)),
+		fn("object_map", "URL templates that look like user-owned resources (/{id}/orders, accountId, tenant). The BOLA map even without identities. Identities later prove it.", objectSchema(nil)),
+		fn("host_rhyme", "Same path template across many hosts, plus singleton odd paths (admin/graphql/internal) that appear on only one host.", objectSchema(nil)),
+		fn("watchtower_story", "Recent monitoring diffs with old→new snippets. Reason about what capability appeared. Empty if Monitoring is off.", objectSchema(nil)),
 		fn("list_findings", "Confirmed vulnerability findings (status=finding). Filter by type or severity.", objectSchema(map[string]any{
 			"type":     strProp("Vulnerability class, e.g. xss, sqli, ssrf"),
 			"severity": strProp("critical|high|medium|low|info"),
@@ -205,6 +208,12 @@ func (t *Toolbox) Dispatch(ctx context.Context, targetID, name, argsJSON string,
 		payload, err = t.targetBrief(ctx, targetID)
 	case "surface_dossier":
 		payload, err = t.surfaceDossier(ctx, targetID)
+	case "object_map":
+		payload, err = t.objectMap(ctx, targetID)
+	case "host_rhyme":
+		payload, err = t.hostRhyme(ctx, targetID)
+	case "watchtower_story":
+		payload, err = t.watchtowerStoryTool(ctx, targetID)
 	case "list_findings":
 		payload, err = t.listFindings(ctx, targetID, strArg(args, "type"), strArg(args, "severity"), "finding")
 	case "list_candidates":

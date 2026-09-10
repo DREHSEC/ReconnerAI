@@ -46,6 +46,7 @@ type CallEnv struct {
 	Mode      string
 	Playbook  string
 	ScanAllow []string
+	WarRoom   string
 }
 
 type hostWin struct {

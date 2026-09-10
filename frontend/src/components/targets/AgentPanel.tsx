@@ -538,9 +538,9 @@ export function AgentPanel({ targetId }: { targetId: string }) {
           )}
           {huntOpen && (
             <div className="px-4 py-3 border-b border-border space-y-2 bg-accent/[.04]">
-              <p className="text-[11px] text-text-secondary">Optional hypothesis — the hunt loop will use tools and enqueue the smallest module set that tests it.</p>
+              <p className="text-[11px] text-text-secondary">War room hunt: the model sees the ranked dossier, object map, cross-host rhymes, watchtower diffs, and identities. Optional hypothesis steers it. Do not use this to spray XSS.</p>
               <textarea value={hypothesis} onChange={e => setHypothesis(e.target.value)} rows={2}
-                placeholder="e.g. reflected XSS on search, or BOLA on /api/orders/{id}"
+                placeholder="e.g. BOLA on /api/orders/{id}, or the new JS bundle after last monitor diff"
                 className="input font-mono text-xs min-h-[3.5rem]" />
               <div className="flex justify-end gap-2">
                 <Button size="sm" variant="ghost" onClick={() => setHuntOpen(false)}>Close</Button>

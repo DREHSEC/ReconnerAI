@@ -22,9 +22,9 @@ const (
 )
 
 var (
-	execURLRe  = regexp.MustCompile(`(?i)https?://[^\s"'\\<>]+`)
-	execIPv4Re = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-	execHostRe = regexp.MustCompile(`(?i)(?:^|[\s'"=/,])((?:[a-z0-9-]+\.)+[a-z]{2,24})(?::\d{2,5})?`)
+	execURLRe   = regexp.MustCompile(`(?i)https?://[^\s"'\\<>]+`)
+	execIPv4Re  = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	execHostRe  = regexp.MustCompile(`(?i)(?:^|[\s'"=/,])((?:[a-z0-9-]+\.)+[a-z]{2,24})(?::\d{2,5})?`)
 	execFileExt = map[string]bool{
 		"json": true, "txt": true, "xml": true, "yaml": true, "yml": true,
 		"md": true, "log": true, "conf": true, "cfg": true, "html": true,
@@ -119,11 +119,11 @@ func (t *Toolbox) execCommand(ctx context.Context, targetID, command, cwd string
 		}
 	}
 	res := map[string]any{
-		"exit":      exit,
-		"output":    out,
-		"cwd":       dir,
+		"exit":        exit,
+		"output":      out,
+		"cwd":         dir,
 		"duration_ms": time.Since(started).Milliseconds(),
-		"truncated": truncated,
+		"truncated":   truncated,
 	}
 	if timedOut {
 		res["timeout"] = true

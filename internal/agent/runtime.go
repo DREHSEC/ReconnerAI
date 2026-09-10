@@ -349,7 +349,11 @@ func (r *Runtime) start(parent context.Context, targetID string, userID int64, m
 		return nil, err
 	}
 	if mode != modeAlwaysOn {
-		r.setRunEnv(targetID, CallEnv{Mode: mode})
+		env := CallEnv{Mode: mode}
+		if mode == modeHunt && r.store != nil && r.store.db != nil {
+			env.WarRoom = buildWarRoom(parent, r.store.db, targetID, extractHuntHypothesis(userContent))
+		}
+		r.setRunEnv(targetID, env)
 	}
 
 	th, err := r.resolveThread(ctx, targetID, userID, mode, threadID)
@@ -552,6 +556,12 @@ func (r *Runtime) loop(ctx context.Context, targetID, threadID, runID, mode stri
 		var input []InputItem
 		if mode == modeAlwaysOn {
 			input = buildInputBudget(system, msgs, hunterTranscriptBudget)
+		} else if mode == modeHunt {
+			sys := system
+			if wr := r.getRunEnv(targetID).WarRoom; wr != "" {
+				sys = system + "\n\n" + wr
+			}
+			input = withCompactMemory(sys, summary, msgs)
 		} else {
 			input = withCompactMemory(system, summary, msgs)
 		}

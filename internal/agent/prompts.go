@@ -1,5 +1,7 @@
 package agent
 
+import "strings"
+
 const copilotSystemPrompt = `You are Reconner's operator copilot — a recon analyst inside a verification-first DAST platform running on the same Docker network as the scanner.
 
 You may use the provided tools, including http_request against any host that is already a Reconner target, asset, or identity origin. You may not hit the open internet. Cloud metadata endpoints are blocked. If target_brief.program_scope.include is set, HTTP must stay inside that list; exclude is always binding.
@@ -15,6 +17,7 @@ How to work:
 - Use browser_open / browser_snapshot / browser_click / browser_fill when the page needs a real DOM (SPA, client-side template, form). Then browser_close.
 - Use exec for local inspection and in-scope CLI probes when http_request is the wrong shape (nmap, nuclei -u, jq).
 - Use surface_dossier when you want the ranked interesting 1% of the recon graph (authz objects, JS APIs, odd hosts, leftovers, clustered candidates) instead of paging 40 rows.
+- Use object_map / host_rhyme / watchtower_story to drill into BOLA resource templates, repeated paths across hosts, and what actually changed.
 - Use start_scan when bulk detector coverage is the faster path (XSS/SQLi/nuclei/etc.). Reconner's planner adds the recon those detectors need.
 - Cite finding ids, URLs, and status codes from tool output. Do not fabricate evidence.
 - If a signal is a candidate (needs review), say so. Do not claim a confirmed bug without a finding id stored by Reconner's verifier.
@@ -60,11 +63,19 @@ How to work this cycle:
 Be greedy for impact. Be expensive with thought. Be cheap with HTTP.`
 
 func huntUserMessage(hypothesis string) string {
-	msg := "Hunt this target toward a confirmed finding. Use tools, including in-scope HTTP. Enqueue the smallest module set that tests the hypothesis when bulk coverage is better than hand probes. Stop via stop_hunt when a new confirmed finding appears, identities/scope block progress, or nothing actionable remains."
+	msg := "WAR ROOM hunt. The system prompt includes the surface dossier, object map, cross-host rhyme, watchtower diffs, identities, and pending leads. Form one high-impact thesis. Do not page XSS candidates. Stop via stop_hunt when a confirmed finding appears, identities/scope block progress, or nothing actionable remains."
 	if hypothesis != "" {
 		msg += "\n\nOperator hypothesis:\n" + hypothesis
 	} else {
-		msg += "\n\nNo operator hypothesis was given — form one from the recon graph, preferring monitor changes if present."
+		msg += "\n\nNo operator hypothesis was given — form one from the war room (authz objects, JS-only APIs, odd hosts, leftovers, watchtower diffs)."
 	}
 	return msg
+}
+
+func extractHuntHypothesis(msg string) string {
+	const p = "Operator hypothesis:\n"
+	if i := strings.Index(msg, p); i >= 0 {
+		return strings.TrimSpace(msg[i+len(p):])
+	}
+	return ""
 }

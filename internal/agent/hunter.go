@@ -180,6 +180,7 @@ func (r *Runtime) hunterTick(ctx context.Context) {
 	if r.tools != nil {
 		_, _ = r.tools.maybeFileLeadFromSummary(ctx, id, summary, pb.Name)
 	}
+	r.critiqueRecentLeads(ctx, id, summary)
 	r.finishHunterCycle(id, domain, pb.Name, summary)
 }
 
