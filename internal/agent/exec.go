@@ -38,7 +38,7 @@ var (
 	}
 )
 
-func (t *Toolbox) execCommand(ctx context.Context, targetID, command, cwd string) (any, error) {
+func (t *Toolbox) execCommand(ctx context.Context, targetID, command, cwd string, env CallEnv) (any, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, fmt.Errorf("command is required")
@@ -48,6 +48,13 @@ func (t *Toolbox) execCommand(ctx context.Context, targetID, command, cwd string
 	}
 	if err := t.execScopeCheck(ctx, targetID, command); err != nil {
 		return nil, err
+	}
+	if env.Mode == modeAlwaysOn {
+		for _, host := range hostsInCommand(command) {
+			if err := t.limiter().allow(host); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	dir := execWorkspaceDir

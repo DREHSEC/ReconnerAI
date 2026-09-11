@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/recon-platform/internal/config"
 )
@@ -21,15 +22,44 @@ func TestBrowserOpenOutOfScope(t *testing.T) {
 	}
 }
 
-func TestBrowserDeniedAlwaysOn(t *testing.T) {
+func TestBrowserOpenOutOfScopeAlwaysOn(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tb.cfg = &config.Config{AIBrowserEnabled: true, AIBrowserTimeoutSeconds: 5}
+	tid := insertTarget(t, db)
+	raw, _ := json.Marshal(map[string]string{"url": "https://evil.example/login"})
+	res := tb.Dispatch(context.Background(), tid, "browser_open", string(raw), CallEnv{Mode: modeAlwaysOn})
+	if !strings.Contains(res.JSON, "not in scope") {
+		t.Fatalf("hunter browser must stay in scope, got %s", res.JSON)
+	}
+}
+
+func TestHunterBrowserOpenRateLimit(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tb.cfg = &config.Config{AIBrowserEnabled: true, AIBrowserTimeoutSeconds: 5}
+	tb.limit = &hostLimiter{per: map[string]*hostWin{
+		"app.example.test": {window: time.Now(), n: 2},
+	}, max: 2}
+	tid := insertTarget(t, db)
+	raw, _ := json.Marshal(map[string]string{"url": "https://app.example.test/"})
+	res := tb.Dispatch(context.Background(), tid, "browser_open", string(raw), CallEnv{Mode: modeAlwaysOn})
+	if !strings.Contains(res.JSON, "budget") {
+		t.Fatalf("expected hunter budget, got %s", res.JSON)
+	}
+}
+
+func TestHunterBrowserRespectsDeadEnd(t *testing.T) {
 	db := testDB(t)
 	tb := NewToolbox(db, nil, nil)
 	tb.cfg = &config.Config{AIBrowserEnabled: true}
 	tid := insertTarget(t, db)
-	raw, _ := json.Marshal(map[string]string{"url": "https://app.example.test/"})
+	tb.Dispatch(context.Background(), tid, "remember",
+		`{"kind":"dead_end","content":"encoded","url":"https://app.example.test/login"}`)
+	raw, _ := json.Marshal(map[string]string{"url": "https://app.example.test/login"})
 	res := tb.Dispatch(context.Background(), tid, "browser_open", string(raw), CallEnv{Mode: modeAlwaysOn})
-	if !strings.Contains(res.JSON, "24/7 hunter") {
-		t.Fatalf("got %s", res.JSON)
+	if !strings.Contains(res.JSON, "suppressed") {
+		t.Fatalf("expected dead-end suppress, got %s", res.JSON)
 	}
 }
 
@@ -45,14 +75,14 @@ func TestBrowserDisabled(t *testing.T) {
 	}
 }
 
-func TestBrowserNotInHunterToolDefs(t *testing.T) {
+func TestBrowserInHunterToolDefs(t *testing.T) {
 	defs := toolDefsFor(true, false, false)
 	for _, d := range defs {
 		if strings.HasPrefix(d.Name, "browser_") {
-			t.Fatalf("hunter has %s", d.Name)
+			t.Fatalf("browser must stay behind the AIBrowserEnabled flag, got %s", d.Name)
 		}
 	}
-	defs = toolDefsFor(false, false, true)
+	defs = toolDefsFor(true, true, true)
 	found := false
 	for _, d := range defs {
 		if d.Name == "browser_open" {
@@ -60,7 +90,7 @@ func TestBrowserNotInHunterToolDefs(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("copilot must receive browser_open")
+		t.Fatal("hunter with flags on must receive browser_open")
 	}
 }
 

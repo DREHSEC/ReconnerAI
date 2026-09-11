@@ -335,12 +335,14 @@ type Config struct {
 	AIHunterSkipRunning  bool `json:"ai_hunter_skip_running"`
 	AIHunterDeadEndHours int  `json:"ai_hunter_dead_end_hours"`
 	AIHunterWAFMinutes   int  `json:"ai_hunter_waf_minutes"`
-	// AIExecEnabled gives copilot/hunt a bash exec tool inside the container.
-	// The 24/7 hunter never gets it. Hosts in the command must be in Reconner scope.
+	// AIExecEnabled gives copilot, hunt, and the 24/7 hunter a bash exec tool
+	// inside the container. Hosts in the command must be in Reconner scope.
+	// Hunter commands that mention a host count against AIHunterHTTPPerMin.
 	AIExecEnabled        bool `json:"ai_exec_enabled"`
 	AIExecTimeoutSeconds int  `json:"ai_exec_timeout_seconds"`
-	// AIBrowserEnabled gives copilot/hunt an Obscura session (JS-capable in-scope
-	// browser). The 24/7 hunter never gets it. Navigation is scope-checked.
+	// AIBrowserEnabled gives copilot, hunt, and the 24/7 hunter an Obscura
+	// session (JS-capable in-scope browser). Navigation is scope-checked.
+	// Hunter browser_open counts against AIHunterHTTPPerMin.
 	AIBrowserEnabled        bool `json:"ai_browser_enabled"`
 	AIBrowserTimeoutSeconds int  `json:"ai_browser_timeout_seconds"`
 

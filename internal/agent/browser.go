@@ -186,15 +186,20 @@ func waitObscuraWS(ctx context.Context, port int, d time.Duration) (string, erro
 }
 
 func (t *Toolbox) browserOpen(ctx context.Context, targetID, rawURL, identityLabel string, env CallEnv) (any, error) {
-	if env.Mode == modeAlwaysOn {
-		return nil, fmt.Errorf("browser is not available to the 24/7 hunter")
-	}
 	if t.cfg != nil && !t.cfg.AIBrowserEnabled {
 		return nil, fmt.Errorf("browser is disabled — enable it in System → Integrations")
 	}
 	rawURL = strings.TrimSpace(rawURL)
 	if err := t.ensureInEngagement(ctx, targetID, rawURL); err != nil {
 		return nil, err
+	}
+	if why, ok := t.isSuppressed(ctx, targetID, rawURL, ""); ok {
+		return nil, fmt.Errorf("suppressed (%s)", why)
+	}
+	if env.Mode == modeAlwaysOn {
+		if err := t.limiter().allow(hostOf(rawURL)); err != nil {
+			return nil, err
+		}
 	}
 	sess, err := t.ensureBrowser(ctx, targetID)
 	if err != nil {

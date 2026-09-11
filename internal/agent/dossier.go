@@ -82,7 +82,7 @@ func buildSurfaceDossier(ctx context.Context, db *database.DB, targetID string, 
 
 	b.WriteString("\n## How to burn this cycle\n")
 	b.WriteString("1. Form ONE thesis from the dossier (prefer authz objects, JS-only APIs, odd internal hosts, leftovers, watchtower diffs).\n")
-	b.WriteString("2. Probe that thesis with http_request / diff_identities. Do not open 20 XSS candidates.\n")
+	b.WriteString("2. Probe that thesis with http_request / diff_identities / exec / browser_open. Do not open 20 XSS candidates.\n")
 	b.WriteString("3. flag_lead only if this is a *new class* or a *new host family*. Similar XSS/reflection leads will be rejected.\n")
 	b.WriteString("4. remember(dead_end) anything boring. stop_hunt with what the next cycle should pick up.\n")
 

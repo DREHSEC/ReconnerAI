@@ -515,8 +515,8 @@ func (r *Runtime) loop(ctx context.Context, targetID, threadID, runID, mode stri
 		model = r.cfg.AIModel
 	}
 	includeStop := mode == modeHunt || mode == modeAlwaysOn
-	includeExec := mode != modeAlwaysOn && (r.cfg == nil || r.cfg.AIExecEnabled)
-	includeBrowser := mode != modeAlwaysOn && (r.cfg == nil || r.cfg.AIBrowserEnabled)
+	includeExec := r.cfg == nil || r.cfg.AIExecEnabled
+	includeBrowser := r.cfg == nil || r.cfg.AIBrowserEnabled
 	defs := toolDefsFor(includeStop, includeExec, includeBrowser)
 	system := copilotSystemPrompt
 	switch mode {

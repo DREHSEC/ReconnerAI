@@ -154,13 +154,47 @@ func TestExecDisabled(t *testing.T) {
 	}
 }
 
-func TestExecDeniedToHunter(t *testing.T) {
+func TestExecAllowedToHunter(t *testing.T) {
 	db := testDB(t)
 	tb := NewToolbox(db, nil, nil)
 	tid := insertTarget(t, db)
-	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"echo hi"}`, CallEnv{Mode: modeAlwaysOn})
-	if !strings.Contains(res.JSON, "hunter") {
-		t.Fatalf("got %s", res.JSON)
+	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"echo hunter-exec-ok"}`, CallEnv{Mode: modeAlwaysOn})
+	var out struct {
+		Exit   int    `json:"exit"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(res.JSON), &out); err != nil {
+		t.Fatal(res.JSON)
+	}
+	if out.Exit != 0 || !strings.Contains(out.Output, "hunter-exec-ok") {
+		t.Fatalf("hunter should get exec, got %s", res.JSON)
+	}
+}
+
+func TestHunterExecHostRateLimit(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tb.limit = &hostLimiter{per: map[string]*hostWin{
+		"app.example.test": {window: time.Now(), n: 2},
+	}, max: 2}
+	tid := insertTarget(t, db)
+	res := tb.Dispatch(context.Background(), tid, "exec",
+		`{"command":"curl -sS https://app.example.test/"}`, CallEnv{Mode: modeAlwaysOn})
+	if !strings.Contains(res.JSON, "budget") {
+		t.Fatalf("expected hunter budget, got %s", res.JSON)
+	}
+}
+
+func TestHunterExecLocalIgnoresHTTPBudget(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tb.limit = &hostLimiter{per: map[string]*hostWin{
+		"app.example.test": {window: time.Now(), n: 2},
+	}, max: 2}
+	tid := insertTarget(t, db)
+	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"echo local-ok"}`, CallEnv{Mode: modeAlwaysOn})
+	if strings.Contains(res.JSON, "budget") || !strings.Contains(res.JSON, "local-ok") {
+		t.Fatalf("local exec should not consume HTTP budget, got %s", res.JSON)
 	}
 }
 
@@ -175,24 +209,27 @@ func TestExecRejectsDataCwd(t *testing.T) {
 	}
 }
 
-func TestExecNotInHunterToolDefs(t *testing.T) {
+func TestExecInHunterToolDefs(t *testing.T) {
 	defs := toolDefsFor(true, false, false)
 	for _, d := range defs {
 		if d.Name == "exec" {
-			t.Fatal("hunter must not receive exec")
+			t.Fatal("exec must stay behind the AIExecEnabled flag")
 		}
 		if strings.HasPrefix(d.Name, "browser_") {
-			t.Fatal("hunter must not receive browser")
+			t.Fatal("browser must stay behind the AIBrowserEnabled flag")
 		}
 	}
-	defs = toolDefsFor(false, true, true)
-	found := false
+	defs = toolDefsFor(true, true, true)
+	foundExec, foundBrowser := false, false
 	for _, d := range defs {
 		if d.Name == "exec" {
-			found = true
+			foundExec = true
+		}
+		if d.Name == "browser_open" {
+			foundBrowser = true
 		}
 	}
-	if !found {
-		t.Fatal("copilot must receive exec")
+	if !foundExec || !foundBrowser {
+		t.Fatal("hunter with flags on must receive exec and browser_open")
 	}
 }

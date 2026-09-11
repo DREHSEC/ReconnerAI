@@ -125,14 +125,14 @@ func toolDefsFor(includeStop, includeExec, includeBrowser bool) []ToolDef {
 		}, "modules")),
 	}
 	if includeExec {
-		defs = append(defs, fn("exec", "Run a bash command inside the Reconner container. For local toolchain (nuclei -tl, jq, grep templates) and in-scope CLIs (curl/httpx/nmap against Reconner targets). Out-of-scope hosts and cloud metadata are rejected. Secrets are stripped from the environment. Output is truncated. Not given to the 24/7 hunter.", objectSchema(map[string]any{
+		defs = append(defs, fn("exec", "Run a bash command inside the Reconner container. For local toolchain (nuclei -tl, jq, grep templates) and in-scope CLIs (curl/httpx/nmap against Reconner targets). Out-of-scope hosts and cloud metadata are rejected. Secrets are stripped from the environment. Output is truncated. Hunter commands that mention a host count against the per-host HTTP budget.", objectSchema(map[string]any{
 			"command": strProp("Shell command (bash -lc)"),
 			"cwd":     strProp("Optional working directory. /data is not allowed."),
 		}, "command")))
 	}
 	if includeBrowser {
 		defs = append(defs,
-			fn("browser_open", "Open an in-scope URL in Obscura (JS-capable headless browser). Scope-checked like http_request. Optional identity_label replays cookies/headers. Returns a snapshot with @eN refs. Not given to the 24/7 hunter.", objectSchema(map[string]any{
+			fn("browser_open", "Open an in-scope URL in Obscura (JS-capable headless browser). Scope-checked like http_request. Optional identity_label replays cookies/headers. Returns a snapshot with @eN refs. Hunter navigations count against the per-host HTTP budget.", objectSchema(map[string]any{
 				"url":            strProp("Absolute http/https URL"),
 				"identity_label": strProp("Optional identity label whose session cookies/headers are applied"),
 			}, "url")),
@@ -261,42 +261,24 @@ func (t *Toolbox) Dispatch(ctx context.Context, targetID, name, argsJSON string,
 	case "start_scan":
 		payload, err = t.startScan(ctx, targetID, stringSlice(args["modules"]), strArg(args, "note"), e)
 	case "exec":
-		if e.Mode == modeAlwaysOn {
-			err = fmt.Errorf("exec is not available to the 24/7 hunter")
-		} else if t.cfg != nil && !t.cfg.AIExecEnabled {
+		if t.cfg != nil && !t.cfg.AIExecEnabled {
 			err = fmt.Errorf("exec is disabled — enable it in System → Integrations")
 		} else {
-			payload, err = t.execCommand(ctx, targetID, strArg(args, "command"), strArg(args, "cwd"))
+			payload, err = t.execCommand(ctx, targetID, strArg(args, "command"), strArg(args, "cwd"), e)
 		}
 	case "browser_open":
 		payload, err = t.browserOpen(ctx, targetID, strArg(args, "url"), strArg(args, "identity_label"), e)
 	case "browser_snapshot":
-		if e.Mode == modeAlwaysOn {
-			err = fmt.Errorf("browser is not available to the 24/7 hunter")
-		} else {
-			t.browserMu.Lock()
-			sess := t.browsers[targetID]
-			t.browserMu.Unlock()
-			payload, err = t.browserSnapshot(sess)
-		}
+		t.browserMu.Lock()
+		sess := t.browsers[targetID]
+		t.browserMu.Unlock()
+		payload, err = t.browserSnapshot(sess)
 	case "browser_click":
-		if e.Mode == modeAlwaysOn {
-			err = fmt.Errorf("browser is not available to the 24/7 hunter")
-		} else {
-			payload, err = t.browserAct(ctx, targetID, "browser_click", strArg(args, "ref"), strArg(args, "selector"), "")
-		}
+		payload, err = t.browserAct(ctx, targetID, "browser_click", strArg(args, "ref"), strArg(args, "selector"), "")
 	case "browser_fill":
-		if e.Mode == modeAlwaysOn {
-			err = fmt.Errorf("browser is not available to the 24/7 hunter")
-		} else {
-			payload, err = t.browserAct(ctx, targetID, "browser_fill", strArg(args, "ref"), strArg(args, "selector"), strArg(args, "value"))
-		}
+		payload, err = t.browserAct(ctx, targetID, "browser_fill", strArg(args, "ref"), strArg(args, "selector"), strArg(args, "value"))
 	case "browser_eval":
-		if e.Mode == modeAlwaysOn {
-			err = fmt.Errorf("browser is not available to the 24/7 hunter")
-		} else {
-			payload, err = t.browserEval(ctx, targetID, strArg(args, "expression"))
-		}
+		payload, err = t.browserEval(ctx, targetID, strArg(args, "expression"))
 	case "browser_close":
 		payload = t.browserClose(targetID)
 	case "stop_hunt":

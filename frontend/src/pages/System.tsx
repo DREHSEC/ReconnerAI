@@ -304,7 +304,7 @@ export default function System() {
               <AgentField label="Cycle cap (min)" hint="Wall clock per hunter cycle">
                 <input type="number" min={1} max={120} className="input font-mono text-xs" value={agentDraft.ai_hunter_cycle_minutes ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_cycle_minutes: e.target.value }))} />
               </AgentField>
-              <AgentField label="Hunter HTTP / min / host" hint="Always-on probe budget">
+              <AgentField label="Hunter HTTP / min / host" hint="Always-on budget for http_request, browser_open, exec-with-hosts">
                 <input type="number" min={1} max={600} className="input font-mono text-xs" value={agentDraft.ai_hunter_http_per_min ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_http_per_min: e.target.value }))} />
               </AgentField>
               <AgentField label="Hunter scan modules" hint="Max start_scan modules per cycle">

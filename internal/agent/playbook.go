@@ -72,13 +72,13 @@ func pickPlaybook(ctx context.Context, db *database.DB, targetID string) playboo
 	case identities >= 2:
 		return playbook{"authz_surface", "two identities, no hypotheses yet", head + "\n\nPLAYBOOK authz_surface: interesting_params for id/uuid/user/order/account, then diff_identities on 2-4 of them vs unauth. flag_lead on a real boundary break. start_scan only [idor,authz] if coverage says they never ran.", []string{"idor", "authz"}}
 	case freshWatch > 0:
-		return playbook{"watchtower", "fresh monitor diffs", head + "\n\nPLAYBOOK watchtower: list_monitoring_changes, then http_request the new hosts/URLs. remember(dead_end) anything boring. start_scan only [exposure,nuclei] if they never completed.", []string{"exposure", "nuclei"}}
+		return playbook{"watchtower", "fresh monitor diffs", head + "\n\nPLAYBOOK watchtower: list_monitoring_changes, then http_request the new hosts/URLs (browser_open if the change is a JS-rendered app). remember(dead_end) anything boring. start_scan only [exposure,nuclei] if they never completed.", []string{"exposure", "nuclei"}}
 	case cands > 0:
 		return playbook{"candidates", "unproven candidates sitting in review", head + "\n\nPLAYBOOK candidates: list_candidates, inspect_finding, reproduce with http_request (and a second identity if present). flag_lead if it still looks real. start_scan only [verify] — do not re-run the whole detector set.", []string{"verify"}}
 	case reflected > 0:
 		return playbook{"reflection", "reflected parameters nobody finished", head + "\n\nPLAYBOOK reflection: interesting_params reflected_only. Probe redirect/url/next/file/path with http_request. remember(dead_end) encoded sinks. start_scan only [xss,open_redirect] if not already completed.", []string{"xss", "open_redirect"}}
 	case jsHits > 0:
-		return playbook{"js_shadow", "JS secrets and hidden endpoints", head + "\n\nPLAYBOOK js_shadow: list_js_findings. Hit undocumented API paths with http_request. Record secrets as leads, do not exfiltrate off-scope. start_scan only [js_endpoints,jwt] if missing.", []string{"js_endpoints", "jwt"}}
+		return playbook{"js_shadow", "JS secrets and hidden endpoints", head + "\n\nPLAYBOOK js_shadow: list_js_findings. Hit undocumented API paths with http_request. Use browser_open for SPA-only routes http_request cannot render. Record secrets as leads, do not exfiltrate off-scope. start_scan only [js_endpoints,jwt] if missing.", []string{"js_endpoints", "jwt"}}
 	case backups > 0 || dirs > 0:
 		return playbook{"leftovers", "directories and backup files", head + "\n\nPLAYBOOK leftovers: http_request interesting leftover paths (.git, .env, dump, bak, phpinfo, actuator). start_scan only [backup_discovery,exposure] if never completed.", []string{"backup_discovery", "exposure"}}
 	default:
