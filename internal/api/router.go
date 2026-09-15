@@ -19,16 +19,23 @@ import (
 )
 
 type Handler struct {
-	db      *database.DB
-	hub     *websocket.Hub
-	sched   *scheduler.Scheduler
-	cfg     *config.Config
-	logger  *logger.Logger
-	auth    *auth.Auth
-	updates *releaseChecker
-	bounty  *bounty.Service
-	agent   *agent.Runtime
+	db       *database.DB
+	hub      *websocket.Hub
+	sched    *scheduler.Scheduler
+	cfg      *config.Config
+	logger   *logger.Logger
+	auth     *auth.Auth
+	updates  *releaseChecker
+	bounty   *bounty.Service
+	agent    *agent.Runtime
+	telegram *TelegramBot
 }
+
+// SetTelegramBot attaches the runtime after the handler exists. The bot needs
+// the handler's target-management primitives, while the router needs the bot's
+// settings API, so construction is deliberately two-phase to avoid duplicate
+// controller implementations.
+func (h *Handler) SetTelegramBot(bot *TelegramBot) { h.telegram = bot }
 
 // NewHandler builds the single API runtime used by both the HTTP router and the
 // raw OOB listener. Keeping one handler instance ensures every inbound callback
@@ -149,6 +156,17 @@ func (h *Handler) Router() http.Handler {
 	api.HandleFunc("/targets/{id}/replay", h.requireAuth(h.handleReplay)).Methods("POST")
 	api.HandleFunc("/targets/{id}/objects", h.requireAuth(h.handleListObjects)).Methods("GET")
 	api.HandleFunc("/targets/{id}/capture/traffic", h.requireAuth(h.handleIngestTraffic)).Methods("POST")
+	api.HandleFunc("/targets/{id}/captures/preview", h.requireAuth(h.handlePreviewCapture)).Methods("POST")
+	api.HandleFunc("/targets/{id}/captures", h.requireAuth(h.handleImportCapture)).Methods("POST")
+	api.HandleFunc("/targets/{id}/captures", h.requireAuth(h.handleListCaptures)).Methods("GET")
+	api.HandleFunc("/targets/{id}/captures/{cid}/preflight", h.requireAuth(h.handlePreflightCapture)).Methods("POST")
+	api.HandleFunc("/targets/{id}/captures/{cid}", h.requireAuth(h.handleDeleteCapture)).Methods("DELETE")
+	api.HandleFunc("/targets/{id}/captures/{cid}/templates", h.requireAuth(h.handleCaptureTemplates)).Methods("GET")
+	api.HandleFunc("/targets/{id}/captures/{cid}/templates/{tid}/reveal", h.requireAuth(h.handleRevealCaptureTemplate)).Methods("POST")
+	api.HandleFunc("/targets/{id}/captures/{cid}/templates/{tid}", h.requireAuth(h.handleEditCaptureTemplate)).Methods("PUT")
+	api.HandleFunc("/targets/{id}/captures/{cid}/analyze", h.requireAuth(h.handleAnalyzeCapture)).Methods("POST")
+	api.HandleFunc("/targets/{id}/captures/{cid}/runs", h.requireAuth(h.handleCaptureRuns)).Methods("GET")
+	api.HandleFunc("/targets/{id}/captures/{cid}/runs/{rid}/reveal", h.requireAuth(h.handleRevealGuidedReport)).Methods("POST")
 	api.HandleFunc("/targets/{id}/relationships", h.requireAuth(h.handleListRelationships)).Methods("GET")
 	api.HandleFunc("/targets/{id}/actions", h.requireAuth(h.handleListActions)).Methods("GET")
 	api.HandleFunc("/targets/{id}/hypotheses", h.requireAuth(h.handleListHypotheses)).Methods("GET")
@@ -215,6 +233,13 @@ func (h *Handler) Router() http.Handler {
 	api.HandleFunc("/system/stats", h.requireAuth(h.handleSystemStats)).Methods("GET")
 	api.HandleFunc("/system/update-templates", h.requireAuth(h.handleUpdateNucleiTemplates)).Methods("POST")
 	api.HandleFunc("/system/update-check", h.requireAuth(h.handleUpdateCheck)).Methods("GET")
+	api.HandleFunc("/system/telegram", h.requireAdmin(h.handleGetTelegram)).Methods("GET")
+	api.HandleFunc("/system/telegram", h.requireAdmin(h.handleUpdateTelegram)).Methods("PATCH")
+	api.HandleFunc("/system/telegram/chats", h.requireAdmin(h.handleAddTelegramChat)).Methods("POST")
+	api.HandleFunc("/system/telegram/chats/{chat}", h.requireAdmin(h.handleUpdateTelegramChat)).Methods("PATCH")
+	api.HandleFunc("/system/telegram/chats/{chat}", h.requireAdmin(h.handleDeleteTelegramChat)).Methods("DELETE")
+	api.HandleFunc("/system/telegram/chats/{chat}/test", h.requireAdmin(h.handleTestTelegramChat)).Methods("POST")
+	api.HandleFunc("/system/telegram/retry", h.requireAdmin(h.handleRetryTelegram)).Methods("POST")
 	api.HandleFunc("/notifications", h.requireAuth(h.handleListNotifications)).Methods("GET")
 	api.HandleFunc("/notifications/read", h.requireAuth(h.handleMarkNotificationsRead)).Methods("POST")
 

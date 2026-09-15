@@ -24,8 +24,9 @@ import (
 // query string (GET), form body (POST), or JSON body. This is what lets the
 // scanner cover POST forms and JSON APIs, not just GET params.
 type insertionPoint struct {
-	URL   string
-	Param string
+	guidedOccurrence int
+	URL              string
+	Param            string
 	// Value is the value discovered for this exact insertion point. Active
 	// detectors must mutate the real value instead of silently replacing every
 	// parameter with "1": doing the latter changes UUID/string/date lookups to a
@@ -269,6 +270,13 @@ func semanticRouteIdentity(ip insertionPoint) (string, bool) {
 // the `limit` budget is spent on real, distinct attack surface rather than value
 // variants or analytics params.
 func loadInsertionPoints(ctx context.Context, db *database.DB, targetID string, limit int) []insertionPoint {
+	if g := guidedFrom(ctx); g != nil {
+		var out []insertionPoint
+		for _, p := range g.points {
+			out = append(out, p.ip)
+		}
+		return out
+	}
 	if limit <= 0 {
 		limit = 1000000
 	}
@@ -375,6 +383,9 @@ func loadInsertionPoints(ctx context.Context, db *database.DB, targetID string, 
 // class matches are ordered first; fallback controls how many unfamiliar names
 // are retained so new framework conventions do not become silent blind spots.
 func loadRoutedInsertionPoints(ctx context.Context, db *database.DB, targetID string, class VulnClass, limit, fallback int) []insertionPoint {
+	if guidedFrom(ctx) != nil {
+		return loadInsertionPoints(ctx, db, targetID, limit)
+	}
 	if limit <= 0 {
 		limit = 1000000
 	}
@@ -505,16 +516,12 @@ func loadXSSInsertionPoints(ctx context.Context, db *database.DB, targetID strin
 	if limit <= 0 {
 		limit = 1000000
 	}
-	pool := limit
-	if pool < 10000 {
-		pool = 10000
-	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT url,parameter,COALESCE(value,''),COALESCE(method,'GET'),COALESCE(content_type,''),COALESCE(location,'query'),COALESCE(is_reflected,0)
 		FROM parameters WHERE target_id=?
 		ORDER BY COALESCE(is_reflected,0) DESC,
 			CASE WHEN UPPER(COALESCE(method,'GET'))='GET' THEN 0 ELSE 1 END,
-			LENGTH(url),url,parameter LIMIT ?`, targetID, pool)
+			LENGTH(url),url,parameter,method,content_type,location`, targetID)
 	if err != nil {
 		return nil
 	}
@@ -522,11 +529,27 @@ func loadXSSInsertionPoints(ctx context.Context, db *database.DB, targetID strin
 	seen := map[string]bool{}
 	semanticCounts := map[string]int{}
 	var out []insertionPoint
+	siblings := map[string]map[string]string{}
+	types := map[string]map[string]string{}
 	for rows.Next() {
 		var ip insertionPoint
 		var reflected int
 		if rows.Scan(&ip.URL, &ip.Param, &ip.Value, &ip.Method, &ip.ContentType, &ip.Location, &reflected) != nil ||
-			ip.Param == "" || !urlHostInScope(ctx, ip.URL) {
+			ip.Param == "" || !urlHostInScope(ctx, ip.URL) || !urlInEndpointScope(ctx, ip.URL) {
+			continue
+		}
+		ip.Method = strings.ToUpper(strings.TrimSpace(ip.Method))
+		if ip.Method == "" {
+			ip.Method = "GET"
+		}
+		group := insertionSiblingGroupKey(ip)
+		// Continue reading after selecting the capped input set. Required fields
+		// may rank below the selected field and must not disappear at that cap.
+		if siblings[group] != nil {
+			siblings[group][ip.Param] = ip.Value
+			types[group][ip.Param] = insertionJSONType(ip.Location)
+		}
+		if len(out) >= limit {
 			continue
 		}
 		key := insertionIdentity(ip)
@@ -541,9 +564,15 @@ func loadXSSInsertionPoints(ctx context.Context, db *database.DB, targetID strin
 			semanticCounts[routeKey]++
 		}
 		out = append(out, ip)
-		if len(out) >= limit {
-			break
+		if siblings[group] == nil {
+			siblings[group] = map[string]string{ip.Param: ip.Value}
+			types[group] = map[string]string{ip.Param: insertionJSONType(ip.Location)}
 		}
+	}
+	for i := range out {
+		group := insertionSiblingGroupKey(out[i])
+		out[i].Siblings = siblings[group]
+		out[i].SiblingTypes = types[group]
 	}
 	return out
 }
@@ -565,6 +594,9 @@ func loadAuthHeaders(ctx context.Context, db *database.DB, targetID string) map[
 // buildInjectedRequest constructs an *http.Request with `param` set to `value`
 // in the correct location for the insertion point's method/content-type.
 func buildInjectedRequest(ctx context.Context, ip insertionPoint, value string, auth map[string]string) (*http.Request, error) {
+	if g := guidedFrom(ctx); g != nil {
+		return g.injected(ctx, ip, value, "")
+	}
 	method := strings.ToUpper(ip.Method)
 	if method == "" {
 		method = "GET"

@@ -139,3 +139,55 @@ func TestExistingCandidateResultUsesCandidateID(t *testing.T) {
 		t.Fatalf("existing candidate state=%s", got)
 	}
 }
+
+func TestCanonicalCandidateProjectsOneActionableRow(t *testing.T) {
+	db, tid := testDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	mk := func(rawURL string) VulnerabilityCandidate {
+		return VulnerabilityCandidate{
+			TargetID: tid, Type: "xss", Subtype: "reflected", URL: rawURL,
+			Method: "GET", Parameter: "q", Location: "query",
+			DetectionSource: "test", DetectionMethod: "reflection",
+			Severity: "high", Confidence: 80, Evidence: "reflected",
+		}
+	}
+	firstURL := "https://EXAMPLE.com:443/js/app.js?q=1#first"
+	id1, err := RecordCandidateDetection(ctx, db, mk(firstURL), FindingMeta{Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := RecordCandidateDetection(ctx, db, mk("https://example.COM/js/app.js?q=2#second"), FindingMeta{Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 != id2 {
+		t.Fatalf("host case + default port must dedup to one candidate: %q vs %q", id1, id2)
+	}
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM vuln_findings WHERE target_id=? AND type='xss'`, tid).Scan(&n)
+	if n != 1 {
+		t.Fatalf("Needs Review must show one row for the same file, got %d", n)
+	}
+	var projectedURL string
+	if err := db.QueryRow(`SELECT url FROM vuln_findings WHERE target_id=? AND type='xss'`, tid).Scan(&projectedURL); err != nil {
+		t.Fatal(err)
+	}
+	if projectedURL != firstURL {
+		t.Fatalf("projection URL=%q, want original actionable URL %q", projectedURL, firstURL)
+	}
+
+	// www and apex are separate origins unless redirect/content evidence proves
+	// otherwise; URL spelling alone must not suppress one of their findings.
+	id3, err := RecordCandidateDetection(ctx, db, mk("https://www.example.com/js/app.js?q=3"), FindingMeta{Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id3 == id1 {
+		t.Fatal("www and apex candidates were merged without equivalence evidence")
+	}
+	_ = db.QueryRow(`SELECT COUNT(*) FROM vuln_findings WHERE target_id=? AND type='xss'`, tid).Scan(&n)
+	if n != 2 {
+		t.Fatalf("distinct www origin must keep its own review row, got %d rows", n)
+	}
+}

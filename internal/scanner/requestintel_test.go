@@ -16,6 +16,53 @@ func TestNormalizeURL(t *testing.T) {
 	}
 }
 
+func TestNormalizeURLHostNormalization(t *testing.T) {
+	// Transport-equivalent spellings fold to one endpoint key.
+	groups := [][]string{
+		{
+			"https://WWW.EXAMPLE.COM:443/js/app.js?q=1#first",
+			"https://www.example.com/js/app.js?q=2#second",
+		},
+		{ // default ports stripped per scheme
+			"https://example.com:443/a?q=1",
+			"https://example.com/a?q=2",
+		},
+		{
+			"http://example.com:80/a",
+			"http://example.com/a",
+		},
+		{ // fragments are client-side only and never reach the server
+			"https://example.com/a#section",
+			"https://example.com/a",
+		},
+	}
+	for i, g := range groups {
+		want := NormalizeURL(g[0])
+		for _, u := range g[1:] {
+			if got := NormalizeURL(u); got != want {
+				t.Errorf("group %d: %q should normalize to %q, got %q", i, u, want, got)
+			}
+		}
+	}
+
+	// Must stay distinct unless equivalence is established from actual response
+	// evidence: www/apex, trailing slash and query-name case can route differently.
+	distinct := [][2]string{
+		{"https://www.example.com/a", "https://example.com/a"},
+		{"https://example.com/a/", "https://example.com/a"},
+		{"https://example.com/a?User=1", "https://example.com/a?user=1"},
+		{"https://example.com:8443/a", "https://example.com/a"},
+		{"https://api.example.com/a", "https://example.com/a"},
+		{"http://example.com/a", "https://example.com/a"},
+		{"https://example.com:443/a", "http://example.com:443/a"},
+	}
+	for _, d := range distinct {
+		if NormalizeURL(d[0]) == NormalizeURL(d[1]) {
+			t.Errorf("must stay distinct: %q vs %q (both -> %q)", d[0], d[1], NormalizeURL(d[0]))
+		}
+	}
+}
+
 func TestBodyHashStableUnderNonce(t *testing.T) {
 	h1 := BodyHash(`{"user":"alice","csrf":"AAA111","ts":1699999999}`)
 	h2 := BodyHash(`{"user":"alice","csrf":"BBB222","ts":1700000001}`)

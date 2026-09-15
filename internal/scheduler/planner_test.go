@@ -1,6 +1,8 @@
 package scheduler
 
 import (
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/recon-platform/internal/models"
@@ -13,6 +15,28 @@ func has(mods []string, m string) bool {
 		}
 	}
 	return false
+}
+
+func TestRequestedModulesRejectEmptyUnknownAndRetiredSelections(t *testing.T) {
+	for _, selection := range [][]string{
+		nil,
+		{},
+		{"definitely_not_a_module"},
+		{ModuleDOMXSS},
+		{ModulePortScan},
+	} {
+		if _, err := normalizeRequestedModules(selection); !errors.Is(err, ErrInvalidModuleSelection) {
+			t.Errorf("selection %v error=%v, want ErrInvalidModuleSelection", selection, err)
+		}
+	}
+
+	got, err := normalizeRequestedModules([]string{ModuleXSS, " " + ModuleXSS + " ", "speed_slow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{ModuleXSS, "speed_slow"}) {
+		t.Fatalf("normalized selection=%v", got)
+	}
 }
 
 // The set of every DETECTOR module — used to prove single-vulnerability isolation

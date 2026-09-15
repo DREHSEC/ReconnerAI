@@ -248,8 +248,8 @@ func (s *JSScanner) Run(ctx context.Context, targetID string, logFn LogFunc) err
 	// Static source→sink flows are internal leads only. Immediately route them to
 	// the real-browser verifier so a user sees a DOM-XSS finding only when an
 	// attacker-controlled URL/window/message source actually executes. The stored
-	// PoC is the alert(document.domain) equivalent of the nonce payload Chromium
-	// proved; a failed/inert lead remains hidden in candidates.
+	// PoC is the same nonce + alert('reconner') payload Chromium proved; a failed/
+	// inert lead remains hidden in candidates.
 	var pendingDOM int
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM candidates
 		WHERE target_id=? AND type='dom_xss' AND subtype='static-flow'

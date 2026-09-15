@@ -37,6 +37,7 @@ type application struct {
 	db        *database.DB
 	scheduler *scheduler.Scheduler
 	handler   *api.Handler
+	telegram  *api.TelegramBot
 }
 
 func main() {
@@ -89,14 +90,19 @@ func boot() (*application, error) {
 	hub := websocket.NewHub()
 	go hub.Run()
 	sched := scheduler.New(db, hub, cfg, log)
-	sched.Start()
 	handler := api.NewHandler(db, hub, sched, cfg, log)
+	telegram := api.NewTelegramBot(handler)
+	handler.SetTelegramBot(telegram)
+	sched.SetNotifier(telegram)
+	telegram.Start()
+	sched.Start()
 
 	return &application{
 		cfg:       cfg,
 		db:        db,
 		scheduler: sched,
 		handler:   handler,
+		telegram:  telegram,
 	}, nil
 }
 
@@ -106,6 +112,7 @@ func run() error {
 		return err
 	}
 	defer app.db.Close()
+	defer app.telegram.Stop()
 	defer app.scheduler.Stop()
 
 	// Resume only work that was deliberately parked during a graceful service

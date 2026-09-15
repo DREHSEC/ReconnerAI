@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reconner Guided Capture</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <main>
+    <header><div><h1>Reconner Guided Capture</h1><p>Passive, scoped request/response collection</p></div><span id="state" class="off">Stopped</span></header>
+    <label>Target scope <small>one hostname or URL prefix per line</small></label>
+    <textarea id="scope" rows="4" placeholder="app.example.com&#10;https://api.example.com/v2/"></textarea>
+    <div class="row">
+      <label class="grow">Identity label<input id="identity" value="User A" maxlength="80"></label>
+      <label class="grow">Capture label<input id="label" placeholder="checkout flow" maxlength="120"></label>
+    </div>
+    <div class="actions"><button id="toggle" class="primary">Start capture</button><button id="clear">Clear</button><button id="export" disabled>Export JSON</button></div>
+    <section class="stats"><div><strong id="unique">0</strong><span>unique</span></div><div><strong id="seen">0</strong><span>seen</span></div><div><strong id="duplicates">0</strong><span>duplicates</span></div><div><strong id="bytes">0 B</strong><span>body data</span></div></section>
+    <div id="notice">Open DevTools before browsing. Only traffic matching the scope above is retained.</div>
+    <table><thead><tr><th>#</th><th>Method</th><th>URL</th><th>Status</th><th>Size</th></tr></thead><tbody id="rows"></tbody></table>
+  </main>
+  <script src="panel.js"></script>
+</body>
+</html>

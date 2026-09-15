@@ -196,7 +196,9 @@ func (s *NoSQLiScanner) send(ctx context.Context, ip insertionPoint, value, op s
 
 	var req *http.Request
 	var err error
-	if op == "" {
+	if g := guidedFrom(reqCtx); g != nil {
+		req, err = g.injected(reqCtx, ip, value, op)
+	} else if op == "" {
 		// Error/plain probes work in every insertion location and must retain the
 		// target's auth, query contract, JSON/form siblings and real method.
 		req, err = buildInjectedRequest(reqCtx, ip, value, auth)

@@ -33,6 +33,7 @@ const Icons = {
   network: I('M6 4h12M6 4v4M18 4v4M4 8h16v4H4V8zM8 16h8M8 16v4M16 16v4M6 12v4M18 12v4'),
   bounty: I('M8 4h8v3a4 4 0 0 1-8 0V4zM6 5H4v2a4 4 0 0 0 4 4M18 5h2v2a4 4 0 0 1-4 4M12 11v5M8 20h8M9 16h6v4H9z'),
   findings: I('M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z'),
+  analyze: I('M4 19V5m0 14h16M7 15l3-3 3 2 5-7M17 7h1v1'),
   tasks: I('M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01'),
   system: I('M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'),
 }
@@ -71,6 +72,7 @@ export const Sidebar = () => {
     { label: 'Operations', items: [
       { to: '/bounty-programs', label: 'Bounty programs', Icon: Icons.bounty },
       { to: '/targets', label: 'Projects', Icon: Icons.targets, badge: targetsN > 0 ? { text: String(targetsN) } : null },
+      { to: '/analyze', label: 'Guided Analyze', Icon: Icons.analyze },
       { to: '/findings', label: 'Findings', Icon: Icons.findings },
       { to: '/tasks', label: 'Scan activity', Icon: Icons.tasks, badge: runningN > 0 ? { text: String(runningN), live: true } : null },
     ] },

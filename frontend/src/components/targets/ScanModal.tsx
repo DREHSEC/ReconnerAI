@@ -4,82 +4,40 @@ import { ModuleIcon } from '../ui/ModuleIcon'
 import { targets as targetsApi } from '../../lib/api'
 import { useUIStore } from '../../store/ui'
 import { cn } from '../../lib/utils'
+import {
+  MODULE_BY_ID, SAFE_PROFILE, SCAN_BUNDLES, SCAN_GROUPS, SCAN_MODULES,
+  STANDARD_PROFILE, resolveModuleSelection,
+} from '../../lib/scanModules'
 import type { Target } from '../../types'
 
-// Scan profiles (Acunetix/Burp-style) — one click presets the module selection.
-// Quick = fast high-signal; Standard = balanced full audit; Deep = everything
-// (adds race/smuggling/xxe/ato + full recon); Custom = leave the operator's picks.
-const PROFILE_MODULES: Record<string, string[] | 'all'> = {
-  quick: ['http_probe', 'js_analysis', 'param_discovery', 'param_reflection', 'open_redirect', 'xss', 'dast', 'sqli', 'nuclei', 'exposure', 'verify'],
-  standard: ['http_probe', 'js_analysis', 'js_endpoints', 'param_discovery', 'param_reflection', 'paramfuzz', 'dir_discovery', 'backup_discovery', 'open_redirect', 'nuclei', 'xss', 'dast', 'vuln_scan', 'sqli', 'nosqli', 'ssrf', 'idor', 'jwt', 'lfi', 'ssti', 'csti', 'cmdi', 'xxe', 'oast', 'cache_poison', 'passive', 'takeover', 'exposure', 'intel', 'verify', 'monitor'],
-  deep: 'all',
+// Profiles hold explicit operator choices. resolveModuleSelection adds the
+// required discovery/verification pipeline and the backend independently plans
+// the same closure, so a stale/custom client cannot bypass dependencies.
+const PROFILE_MODULES: Record<string, string[]> = {
+  safe: SAFE_PROFILE,
+  standard: STANDARD_PROFILE,
+  deep: SCAN_MODULES.filter(module => !module.automatic).map(module => module.id),
 }
 const SCAN_PROFILES: { id: string; label: string; sub: string }[] = [
-  { id: 'quick', label: 'Quick', sub: 'Fast, high-signal' },
-  { id: 'standard', label: 'Standard', sub: 'Balanced audit' },
-  { id: 'deep', label: 'Deep', sub: 'Exhaustive' },
+  { id: 'safe', label: 'Safe', sub: 'Low-impact default' },
+  { id: 'standard', label: 'Standard', sub: 'Focused validation' },
+  { id: 'deep', label: 'Deep', sub: 'All opt-in checks' },
   { id: 'custom', label: 'Custom', sub: 'Your picks' },
 ]
-
-type ModDef = { id: string; label: string; desc: string; default: boolean; group: string }
-const MODULES: ModDef[] = [
-  { id: 'subdomain_enum',   label: 'Subdomain Enum',      desc: 'Passive + active subdomain discovery — OFF by default; the scan stays on the target host(s) you gave unless you turn this on', default: false, group: 'Recon' },
-  { id: 'http_probe',       label: 'HTTP Probe',           desc: 'Probe alive hosts & fingerprint services',      default: true,  group: 'Recon' },
-  { id: 'js_analysis',      label: 'JS Analysis',          desc: 'Extract secrets, endpoints, API keys from JS', default: true,  group: 'Recon' },
-  { id: 'js_endpoints',     label: 'JS Endpoint Probing',  desc: 'Resolve & scan endpoints found inside JS',     default: true,  group: 'Recon' },
-  { id: 'param_discovery',  label: 'Param Discovery',      desc: 'Find URL parameters via crawl & Wayback',      default: true,  group: 'Recon' },
-  { id: 'headless_crawl',   label: 'Headless Crawl (SPA)', desc: 'Render pages in a real browser to harvest DOM-injected links, forms & params a raw crawler misses (heavy) — feeds the XSS engine the real rendered surface', default: false, group: 'Recon' },
-  { id: 'timemachine',      label: 'TimeMachine (Wayback)',desc: 'Mine archived URLs & bucket params by vuln-class', default: true, group: 'Recon' },
-  { id: 'param_reflection', label: 'Reflected Params',     desc: 'Active probe for reflected parameters',         default: true,  group: 'Recon' },
-  { id: 'paramfuzz',        label: 'Hidden Param Mining',  desc: 'Discover undocumented params (Arjun-style)',    default: true,  group: 'Recon' },
-  { id: 'dir_discovery',    label: 'Directory Scan',       desc: 'Discover hidden paths & admin panels',         default: false, group: 'Recon' },
-  { id: 'backup_discovery', label: 'Backup Files',         desc: 'Find backups, configs, .env, .git leaks',      default: false, group: 'Recon' },
-  { id: 'open_redirect',    label: 'Open Redirects',       desc: 'Active check for open redirect parameters',    default: true,  group: 'Injection' },
-  { id: 'nuclei',           label: 'Nuclei Scan',          desc: 'Nuclei vulnerability templates scan',          default: false, group: 'Injection' },
-  { id: 'xss',              label: 'XSS',                  desc: 'Deep context-aware reflected XSS — HTML/attribute (single+double quote)/JS/CSS/URL sinks, multi-reflection, breakout-confirmed', default: true, group: 'Injection' },
-  { id: 'dast',             label: 'DAST (XSS+SQLi combo)',desc: 'Combined engine: context-aware XSS differential + error-based SQLi candidate over GET/POST/JSON (redundant when XSS + SQL Injection are on)', default: false, group: 'Injection' },
-  { id: 'vuln_scan',        label: 'Vuln Scan',            desc: 'Reflected/stored/blind XSS, CORS, 403 bypass, CRLF', default: true, group: 'Injection' },
-  { id: 'sqli',             label: 'SQL Injection',        desc: 'Error / boolean / content-differential + out-of-band, on params & headers',  default: true,  group: 'Injection' },
-  { id: 'nosqli',           label: 'NoSQL Injection',      desc: 'MongoDB operator injection ($ne/$eq) + error-based', default: true, group: 'Injection' },
-  { id: 'ssrf',             label: 'SSRF',                 desc: 'Cloud metadata / internal via URL params',     default: true,  group: 'Injection' },
-  { id: 'idor',             label: 'IDOR / Access Control',desc: 'Enumerable object IDs & missing authorization', default: true,  group: 'Injection' },
-  { id: 'jwt',              label: 'JWT / OAuth',          desc: 'alg=none, weak HMAC secret, sensitive claims, OAuth flow', default: true, group: 'Injection' },
-  { id: 'race',             label: 'Race Conditions',      desc: 'Parallel-burst TOCTOU / limit-overrun testing', default: false, group: 'Injection' },
-  { id: 'smuggling',        label: 'Request Smuggling',    desc: 'Time-based CL.TE / TE.CL desync detection',     default: false, group: 'Injection' },
-  { id: 'cache_poison',     label: 'Web Cache Poisoning',  desc: 'Unkeyed-header poisoning of cached responses',  default: true,  group: 'Injection' },
-  { id: 'oast',             label: 'Blind SSRF/RCE (OAST)',desc: 'Out-of-band callbacks prove blind SSRF & RCE', default: true,  group: 'Injection' },
-  { id: 'lfi',              label: 'LFI / Path Traversal', desc: 'etc/passwd, win.ini, php filter wrappers',     default: true,  group: 'Injection' },
-  { id: 'ssti',             label: 'SSTI (Template Inj.)', desc: '{{7*7}} across Jinja/Twig/Freemarker/ERB',     default: true,  group: 'Injection' },
-  { id: 'csti',             label: 'CSTI (Client Template)', desc: 'Dual safe arithmetic proof after real-browser rendering; no sandbox escape', default: true, group: 'Injection' },
-  { id: 'xxe',              label: 'XXE Injection',        desc: 'In-band file read + OAST blind XML entity',    default: true,  group: 'Injection' },
-  { id: 'cmdi',             label: 'Command Injection',    desc: 'Reflection-proof echo marker + out-of-band OS command injection (RCE)', default: true, group: 'Injection' },
-  { id: 'passive',          label: 'Passive Scan',         desc: 'Headers, cookies, stack traces, leaked secrets', default: true, group: 'Analysis' },
-  { id: 'takeover',         label: 'Subdomain Takeover',   desc: 'Detect dangling CNAMEs on unclaimed services — needs subdomain discovery, so turning it on will also enumerate subdomains', default: false,  group: 'Analysis' },
-  { id: 'ato',              label: 'Account Takeover Chains', desc: 'Correlates XSS+cookie, open-redirect on auth flows, OAuth+redirect, tokens in URL', default: true, group: 'Analysis' },
-  { id: 'origin_ip',        label: 'Origin IP (CDN bypass)',desc: 'Find real IP behind CDN/WAF via DNS history (needs SecurityTrails key)', default: true, group: 'Analysis' },
-  { id: 'shodan',           label: 'Shodan Intel',         desc: 'Passive open-port/banner intel via Shodan (needs API key)', default: false, group: 'Analysis' },
-  { id: 'exposure',         label: 'Exposure Checks',      desc: 'GraphQL introspection, API specs, open buckets', default: true, group: 'Analysis' },
-  { id: 'intel',            label: 'Tech Intelligence',    desc: 'Spring/Laravel/Next/WP/Django specific attacks', default: true, group: 'Analysis' },
-  { id: 'verify',           label: 'Verification Engine',  desc: 'Re-confirm findings + confidence/priority score', default: true, group: 'Analysis' },
-  { id: 'monitor',          label: 'Change Monitor',       desc: 'Detect changes in HTTP services & JS files',   default: false, group: 'Analysis' },
-]
-const GROUPS = ['Recon', 'Injection', 'Analysis']
 
 type AssetLite = { id: string; value: string; kind: string; name: string }
 interface Props { target: Target; asset?: AssetLite; open: boolean; onClose: () => void; onStarted?: () => void }
 
 export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) => {
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(MODULES.filter(m => m.default).map(m => m.id))
+    new Set(SAFE_PROFILE)
   )
-  const [activeProfile, setActiveProfile] = useState('custom')
+  const planned = resolveModuleSelection(selected)
+  const [activeProfile, setActiveProfile] = useState('safe')
   const applyProfile = (p: string) => {
     setActiveProfile(p)
     if (p === 'custom') return
-    const ids = PROFILE_MODULES[p]
-    setSelected(ids === 'all'
-      ? new Set(MODULES.map(m => m.id))
-      : new Set(ids.filter(id => MODULES.some(m => m.id === id))))
+    setSelected(new Set((PROFILE_MODULES[p] || []).filter(id => MODULE_BY_ID.has(id))))
   }
   const [loading, setLoading] = useState(false)
   const { addToast } = useUIStore()
@@ -112,8 +70,9 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
   // offer to confine the WHOLE scan to that exact endpoint and the paths under it —
   // param discovery, crawl, JS, and every vuln module (XSS/SQLi/…) run against the
   // given URL (its query AND path params) instead of the whole host.
-  const scopeIsURL = /^https?:\/\/[^\s,;]+(\/[^\s,;]*|\?[^\s,;]*)/i.test(target.domain.trim())
-    || /^[^\s,;/]+\.[^\s,;/]+\/[^\s,;]/.test(target.domain.trim())
+  const scanScope = (asset?.value || target.domain).trim()
+  const scopeTokens = scanScope.split(/[\s,;]+/).filter(Boolean)
+  const scopeIsURL = scopeTokens.length === 1 && /^https?:\/\/[^\s]+(?:\/[^\s]*|\?[^\s]*)/i.test(scanScope)
   const [singleEndpoint, setSingleEndpoint] = useState(true)
   // Pre-scan authentication (single-domain web scans only). When subdomain
   // enumeration is NOT selected, the scan targets just this host, so we offer to
@@ -132,11 +91,17 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
   useEffect(() => {
     if (!open) return
     setIdorA(''); setIdorB('')
+    setSelected(new Set(SAFE_PROFILE))
+    setActiveProfile('safe')
+    setWebSpeed('normal')
     setSubBrute(true)
     setASNDiscovery(false)
+    setSingleEndpoint(true)
+    setAuthCookie('')
+    setAuthBearer('')
     targetsApi.identities(target.id).then(r => setIdCount(r.length)).catch(() => setIdCount(0))
   }, [open, target.id])
-  const idorSelected = selected.has('idor')
+  const idorSelected = planned.has('idor')
   const idorReady = !idorSelected || idCount >= 2 || (idorA.trim() !== '' && idorB.trim() !== '')
 
   // Every toggle used to persist silently across modal opens (same component
@@ -153,8 +118,18 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
     return n
   })
 
-  const selectAll = () => setSelected(new Set(MODULES.map(m => m.id)))
+  const selectSafe = () => { setActiveProfile('safe'); setSelected(new Set(SAFE_PROFILE)) }
   const selectNone = () => setSelected(new Set())
+
+  const toggleBundle = (modules: string[]) => {
+    setActiveProfile('custom')
+    setSelected(previous => {
+      const next = new Set(previous)
+      const allExplicit = modules.every(id => next.has(id))
+      modules.forEach(id => allExplicit ? next.delete(id) : next.add(id))
+      return next
+    })
+  }
 
   // parseCred turns a pasted string into a request-header map. It honours an
   // EXPLICIT "Header-Name: value" — so custom auth headers (auth_token, X-Api-Key,
@@ -176,7 +151,7 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
   }
 
   const handleStart = async () => {
-    if (selected.size === 0) return
+    if (planned.size === 0) return
     // Enforce the two-identity requirement for IDOR/BOLA BEFORE starting.
     if (idorSelected && idCount < 2 && (!idorA.trim() || !idorB.trim())) {
       addToast('error', 'IDOR/BOLA needs two identities. Paste User A (owner) and User B (attacker) session tokens or cookies below.')
@@ -191,7 +166,7 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
       }
       // Single-domain scan (no subdomain enum): apply the pasted session before
       // the scan starts so authenticated pages are reachable from the first probe.
-      if (!selected.has('subdomain_enum') && (authCookie.trim() || authBearer.trim())) {
+      if (!planned.has('subdomain_enum') && (authCookie.trim() || authBearer.trim())) {
         const headers: Record<string, string> = {}
         if (authCookie.trim()) Object.assign(headers, parseCred(authCookie.trim()))
         // Flexible: a bare token → Bearer; or an explicit "auth_token: …" / "X-Api-Key: …" custom header.
@@ -199,7 +174,7 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
         try { await targetsApi.setAuth(target.id, headers) } catch { /* non-fatal */ }
       }
       // Preserve module order
-      const orderedModules = MODULES.filter(m => selected.has(m.id)).map(m => m.id)
+      const orderedModules = SCAN_MODULES.filter(m => planned.has(m.id)).map(m => m.id)
       if (webSpeed === 'slow') orderedModules.push('speed_slow')
       if (webSpeed === 'fast') orderedModules.push('speed_fast')
       if (!subBrute) orderedModules.push('no_subdomain_brute')
@@ -234,11 +209,29 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
 
         <div className="flex items-center justify-between">
           <p className="text-xs text-text-muted">
-            <span className="text-accent-hover font-semibold">{selected.size}</span> of {MODULES.length} modules selected
+            <span className="text-accent-hover font-semibold">{selected.size}</span> selected
+            {planned.size > selected.size && <span> · {planned.size - selected.size} dependency{planned.size - selected.size === 1 ? '' : 'ies'} added automatically</span>}
           </p>
           <div className="flex gap-2 text-xs">
-            <button onClick={selectAll} className="px-2 py-1 rounded-md bg-accent/10 text-accent-hover hover:bg-accent/20 transition-colors">Select all</button>
+            <button onClick={selectSafe} className="px-2 py-1 rounded-md bg-accent/10 text-accent-hover hover:bg-accent/20 transition-colors">Safe defaults</button>
             <button onClick={selectNone} className="px-2 py-1 rounded-md bg-white/5 text-text-muted hover:text-text-secondary transition-colors">Clear</button>
+          </div>
+        </div>
+
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-1.5">Pipeline bundles</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-1.5">
+            {SCAN_BUNDLES.map(bundle => {
+              const on = bundle.modules.every(id => selected.has(id))
+              return (
+                <button key={bundle.id} type="button" onClick={() => toggleBundle(bundle.modules)}
+                  className={cn('rounded-lg border px-3 py-2 text-left transition-colors',
+                    on ? 'border-accent/40 bg-accent/[.1]' : 'border-border bg-white/[.02] hover:border-border-strong')}>
+                  <span className="block text-xs font-semibold text-text-primary">{bundle.label}</span>
+                  <span className="block mt-0.5 text-[10px] text-text-muted">{bundle.desc}</span>
+                </button>
+              )
+            })}
           </div>
         </div>
 
@@ -289,7 +282,7 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
 
         {/* Subdomain permutation brute-force toggle — the slowest part of enum.
             Only relevant when subdomain enumeration is selected. */}
-        {selected.has('subdomain_enum') && (
+        {planned.has('subdomain_enum') && (
           <div className="space-y-2">
             <label className="flex items-start gap-3 rounded-lg border border-white/[.08] bg-white/[.02] p-3 cursor-pointer">
               <input type="checkbox" checked={subBrute} onChange={e => setSubBrute(e.target.checked)}
@@ -317,7 +310,7 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
         {/* Pre-scan authentication — only for single-domain scans (subdomain
             enumeration OFF). Attaches a logged-in session so the scanner reaches
             pages behind auth from the first request. */}
-        {!selected.has('subdomain_enum') && (
+        {!planned.has('subdomain_enum') && (
           <div className="rounded-lg border border-white/[.08] bg-white/[.02] p-3 space-y-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">Authentication scan <span className="normal-case font-normal text-text-muted">(optional — single domain)</span></p>
             <p className="text-[10px] text-text-muted">Paste a logged-in session to scan authenticated pages. Applied to every active check on this host. For a custom header use <span className="font-mono">Header-Name: value</span> (e.g. <span className="font-mono">auth_token: eyJ…</span>).</p>
@@ -359,38 +352,48 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
           </div>
         )}
 
-        {/* All modules visible at once: compact grouped 2/3/4-column grid so the
-            full 30+ module roster fits without hunting through a long scroll. */}
+        {/* The resolved pipeline is shown, including locked automatic dependencies.
+            Internal legacy/composite dispatchers are intentionally not user-facing. */}
         <div className="max-h-[52vh] overflow-y-auto pr-1 space-y-4 no-scrollbar">
-          {GROUPS.map(group => {
-            const mods = MODULES.filter(m => m.group === group)
-            const on = mods.filter(m => selected.has(m.id)).length
+          {SCAN_GROUPS.map(group => {
+            const mods = SCAN_MODULES.filter(m => m.group === group.id)
+            const on = mods.filter(m => planned.has(m.id)).length
             return (
-              <div key={group}>
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">{group}</span>
+              <div key={group.id} className="rounded-xl border border-white/[.06] bg-white/[.015] p-2.5">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">{group.label}</span>
                   <span className="text-[10px] text-text-muted">{on}/{mods.length}</span>
                   <span className="flex-1 h-px bg-white/[.06]" />
                 </div>
+                <p className="text-[10px] text-text-muted mb-2">{group.desc}</p>
                 <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-1.5">
                   {mods.map(m => {
-                    const sel = selected.has(m.id)
+                    const explicit = selected.has(m.id)
+                    const sel = planned.has(m.id)
+                    const auto = sel && !explicit
                     return (
                       <button
                         key={m.id}
-                        onClick={() => toggle(m.id)}
+                        type="button"
+                        onClick={() => !m.automatic && toggle(m.id)}
                         title={m.desc}
+                        disabled={!!m.automatic}
                         className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border text-left transition-all duration-150 ${
                           sel
                             ? 'bg-accent/[.12] border-accent/40 text-white ring-1 ring-accent/20'
                             : 'bg-white/[.02] border-white/[.06] text-text-secondary hover:border-white/20 hover:bg-white/[.05]'
-                        }`}
+                        } ${m.automatic ? 'cursor-default' : ''}`}
                       >
                         <ModuleIcon module={m.id} size={20} />
-                        <span className="text-xs font-medium truncate flex-1">{m.label}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-medium truncate">{m.label}</span>
+                          <span className={`block text-[9px] uppercase tracking-wide ${m.tier === 'advanced' ? 'text-severity-high' : m.tier === 'active' ? 'text-series-3' : 'text-severity-low'}`}>
+                            {auto ? 'auto dependency' : m.automatic ? 'automatic' : m.tier}
+                          </span>
+                        </span>
                         <span className={`w-3.5 h-3.5 rounded-full grid place-items-center shrink-0 text-[9px] ${
                           sel ? 'bg-accent text-white' : 'border border-white/15'
-                        }`}>{sel ? '✓' : ''}</span>
+                        }`}>{sel ? (auto ? '·' : '✓') : ''}</span>
                       </button>
                     )
                   })}
@@ -402,9 +405,9 @@ export const ScanModal = ({ target, asset, open, onClose, onStarted }: Props) =>
 
         <div className="flex justify-end gap-2 pt-3 border-t border-white/[.06]">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={loading} disabled={selected.size === 0 || !idorReady} onClick={handleStart}
+          <Button variant="primary" loading={loading} disabled={planned.size === 0 || !idorReady} onClick={handleStart}
             title={!idorReady ? 'IDOR/BOLA needs two identities — paste User A and User B above' : undefined}>
-            ▶ Start Scan ({selected.size})
+            ▶ Start Scan ({planned.size} phases)
           </Button>
         </div>
       </div>

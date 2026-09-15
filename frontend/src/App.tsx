@@ -11,6 +11,7 @@ import Findings from './pages/Findings'
 import Tasks from './pages/Tasks'
 import System from './pages/System'
 import BountyPrograms from './pages/BountyPrograms'
+import GuidedAnalyze from './pages/GuidedAnalyze'
 import { Spinner } from './components/ui'
 
 function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -47,6 +48,7 @@ export default function App() {
           <Route path="targets" element={<Targets/>}/>
           <Route path="targets/:id" element={<TargetDetail/>}/>
           <Route path="bounty-programs" element={<BountyPrograms/>}/>
+          <Route path="analyze" element={<GuidedAnalyze/>}/>
           <Route path="findings" element={<Findings/>}/>
           <Route path="tasks" element={<Tasks/>}/>
           <Route path="system" element={<System/>}/>

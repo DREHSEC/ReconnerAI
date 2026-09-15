@@ -230,3 +230,20 @@ func PlanModules(selected []string) []string {
 	// Preserve any passthrough tokens (speed/network) after the web plan.
 	return append(out, passthrough...)
 }
+
+// Only adjacent members may run together. Looking ahead across a sequential
+// stage starts consumers before their inputs exist (for example parameter
+// discovery before js_endpoints has completed).
+func parallelPhaseIndices(modules []string, start int, groups map[string]int, handled map[int]bool) []int {
+	if start < 0 || start >= len(modules) || groups[modules[start]] == 0 {
+		return nil
+	}
+	group := groups[modules[start]]
+	var indices []int
+	for i := start; i < len(modules) && groups[modules[i]] == group; i++ {
+		if !handled[i] {
+			indices = append(indices, i)
+		}
+	}
+	return indices
+}

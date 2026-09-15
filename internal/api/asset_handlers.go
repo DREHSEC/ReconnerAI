@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -282,7 +283,8 @@ func (h *Handler) handleScanAsset(w http.ResponseWriter, r *http.Request) {
 		Priority int      `json:"priority"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		req.Modules = scheduler.AllModules
+		h.writeError(w, http.StatusBadRequest, "invalid scan request")
+		return
 	}
 	if req.Priority == 0 {
 		req.Priority = 5
@@ -308,6 +310,10 @@ func (h *Handler) handleScanAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := h.sched.CreateScopedTask(id, req.Modules, req.Priority, value)
 	if err != nil {
+		if errors.Is(err, scheduler.ErrInvalidModuleSelection) {
+			h.writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		h.writeError(w, http.StatusInternalServerError, "failed to start scan")
 		return
 	}

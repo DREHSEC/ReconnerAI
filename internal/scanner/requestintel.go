@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"net"
 	"net/url"
 	"regexp"
 	"sort"
@@ -38,13 +39,33 @@ type CanonResponse struct {
 
 var reNumSegments = regexp.MustCompile(`/\d+`)
 
-// NormalizeURL produces a stable template for a URL: sorted query keys (values
-// dropped) and numeric path segments collapsed to {id}. This lets us recognize
-// that /api/orders/1 and /api/orders/2 are the SAME endpoint.
+// NormalizeURL produces a stable endpoint template: scheme and hostname are
+// case-folded, default ports and fragments are removed, numeric path segments
+// collapse to {id}, and sorted query names are retained without their values.
+//
+// Semantic origin/path distinctions are intentionally preserved. In
+// particular, www and apex hosts, query-name case, non-default ports, and a
+// trailing slash may route to different applications or handlers and must not
+// be merged without response/redirect evidence.
 func NormalizeURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
 		return raw
+	}
+	scheme := strings.ToLower(u.Scheme)
+	hostName := strings.ToLower(u.Hostname())
+	port := u.Port()
+	// Strip only the DEFAULT port for the known scheme, so
+	// https://x.com:443 == https://x.com but https://x.com:8443 stays distinct
+	// (and http://x.com:443 keeps its explicit port).
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	host := hostName
+	if port != "" {
+		host = net.JoinHostPort(hostName, port)
+	} else if strings.Contains(hostName, ":") {
+		host = "[" + hostName + "]"
 	}
 	path := reNumSegments.ReplaceAllString(u.Path, "/{id}")
 	keys := make([]string, 0, len(u.Query()))
@@ -52,7 +73,7 @@ func NormalizeURL(raw string) string {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	norm := u.Scheme + "://" + u.Host + path
+	norm := scheme + "://" + host + path
 	if len(keys) > 0 {
 		norm += "?" + strings.Join(keys, "&")
 	}

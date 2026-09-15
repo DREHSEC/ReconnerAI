@@ -91,6 +91,14 @@ func RecordCandidateDetection(ctx context.Context, db *database.DB, c Vulnerabil
 	if err != nil {
 		return "", err
 	}
+	// Candidate identity is authoritative. If this observation matched an
+	// existing fingerprint (for example host case or an explicit default port),
+	// project the original actionable URL instead of creating a second UI row
+	// from the latest spelling of the same endpoint.
+	c, err = loadCandidateForResult(ctx, db, id)
+	if err != nil {
+		return id, err
+	}
 	state := candidateState(ctx, db, id)
 	// A new observation may legitimately re-open a previous negative/unknown
 	// result. CONFIRMED is sticky and is never downgraded by detector traffic.
@@ -197,6 +205,9 @@ func RecordCandidateResult(ctx context.Context, db *database.DB, c Vulnerability
 			WHERE id=?`, result.Confidence, c.Payload, c.Payload, result.Evidence, RedactText(result.Evidence), id)
 	} else {
 		id, err = StoreCandidateE(ctx, db, c)
+		if err == nil {
+			c, err = loadCandidateForResult(ctx, db, id)
+		}
 	}
 	if err != nil {
 		return "", err

@@ -417,8 +417,9 @@ func verifyNucleiSignatureReplay(rawURL, method string, check func(string) bool)
 // markNucleiVerification records the verifier verdict on the matching nuclei_findings
 // row(s) so the UI/report can hide rejected false positives and surface proven ones.
 func (s *VerifyScanner) markNucleiVerification(targetID, matchedURL, verification string, confidence int) {
-	_, _ = s.db.Exec(`UPDATE nuclei_findings SET verification=?, confidence=? WHERE target_id=? AND matched_url=?`,
-		verification, confidence, targetID, matchedURL)
+	_, _ = s.db.Exec(`UPDATE nuclei_findings SET verification=?, confidence=?,
+		verified_at=CASE WHEN ?='verified' THEN CURRENT_TIMESTAMP ELSE verified_at END
+		WHERE target_id=? AND matched_url=?`, verification, confidence, verification, targetID, matchedURL)
 }
 
 // contextPayloadFor pulls the example payload out of the verifier evidence line

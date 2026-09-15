@@ -20,6 +20,11 @@ type ReplaySpec struct {
 	URL         string
 	Body        string
 	ContentType string
+	// Headers are request-template headers captured from the browser/proxy. They
+	// are filtered through replayHeaderAllowed before use. Identity headers are
+	// applied afterwards and therefore refresh Cookie/Authorization when a bound
+	// identity is available.
+	Headers map[string][]string
 }
 
 // ReplayResult is one identity's replay outcome.
@@ -54,6 +59,20 @@ func Replay(ctx context.Context, spec ReplaySpec, id *Identity) ReplayResult {
 		return ReplayResult{IdentityLabel: label, Verdict: "error"}
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Reconner/1.0)")
+	for name, values := range spec.Headers {
+		if !replayHeaderAllowed(name) {
+			continue
+		}
+		if !validHTTPHeaderName(name) {
+			return ReplayResult{IdentityLabel: label, Verdict: "error", Body: "invalid captured header name"}
+		}
+		for _, value := range values {
+			if strings.ContainsAny(value, "\r\n") || len(value) > 16*1024 {
+				return ReplayResult{IdentityLabel: label, Verdict: "error", Body: "invalid captured header: " + http.CanonicalHeaderKey(name)}
+			}
+			req.Header.Add(name, value)
+		}
+	}
 	if spec.ContentType != "" {
 		req.Header.Set("Content-Type", spec.ContentType)
 	}
@@ -94,6 +113,32 @@ func Replay(ctx context.Context, spec ReplaySpec, id *Identity) ReplayResult {
 	return ReplayResult{
 		IdentityLabel: label, Response: ir, Status: ir.Status, CT: ir.CT, Len: ir.Len,
 		Body: RedactText(shown), Verdict: verdict, TimingMs: time.Since(start).Milliseconds(),
+	}
+}
+
+func validHTTPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		// RFC 9110 field-name = token (RFC 7230 tchar set).
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))) {
+			return false
+		}
+	}
+	return true
+}
+
+func replayHeaderAllowed(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "host", "content-length", "connection", "transfer-encoding", "proxy-authorization",
+		"proxy-authenticate", "proxy-connection", "keep-alive", "te", "trailer", "upgrade",
+		"forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip":
+		return false
+	default:
+		return true
 	}
 }
 

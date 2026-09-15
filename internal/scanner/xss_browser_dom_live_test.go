@@ -68,15 +68,15 @@ func TestBrowserDOMSourceModesLive(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if pl, ok := b.ConfirmDOMSource(ctx, srv.URL+tc.path, tc.mode, tc.param, nil); !ok {
 				t.Fatalf("real browser did not prove %s DOM source", tc.name)
-			} else if !strings.Contains(pl, "alert(document.domain)") {
-				t.Fatalf("reported PoC is not popup-capable: %q", pl)
+			} else if !strings.Contains(pl, "document.title='RCNX") || !strings.Contains(pl, "alert('reconner')") {
+				t.Fatalf("reported PoC is not the nonce-backed reconner alert proof: %q", pl)
 			}
 		})
 	}
 
 	if pl, ok := b.ConfirmScriptResource(ctx, insertionPoint{
 		URL: srv.URL + "/asset.js?q=seed", Param: "q", Method: "GET", Location: "query",
-	}, nil); !ok || !strings.Contains(pl, "alert(document.domain)") {
+	}, nil); !ok || !strings.Contains(pl, "document.title='RCNX") || !strings.Contains(pl, "alert('reconner')") {
 		t.Fatalf("external JavaScript reflection was not runtime-proven: ok=%v payload=%q", ok, pl)
 	}
 }

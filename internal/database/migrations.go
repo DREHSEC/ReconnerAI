@@ -80,6 +80,11 @@ func RunMigrations(db *DB) error {
 		createAuthzObservationsTable,
 		createHypothesesTable,
 		createStateSnapshotsTable,
+		createCaptureSessionsTable,
+		createRequestTemplatesTable,
+		createCapturedResponsesTable,
+		createGuidedRunsTable,
+		createCaptureAuditTable,
 		createCandidatesTable,
 		alterNucleiFindingsAddVerification,
 		alterNucleiFindingsAddConfidence,
@@ -96,6 +101,7 @@ func RunMigrations(db *DB) error {
 		alterNucleiFindingsAddCurlCommand,
 		alterNucleiFindingsAddRequest,
 		alterNucleiFindingsAddResponse,
+		alterNucleiFindingsAddVerifiedAt,
 		alterEvidenceAddImage,
 		createIndexes,
 		alterTargetsAddExcludeScope,
@@ -112,6 +118,11 @@ func RunMigrations(db *DB) error {
 		createBountySyncStateTable,
 		createProjectProgramsTable,
 		createBountyScopeEventsTable,
+		createTelegramConfigTable,
+		alterTelegramConfigAddLastUpdateID,
+		createTelegramChatsTable,
+		createTelegramOutboxTable,
+		createTelegramAuditLogTable,
 		alterAssetsAddAssetType,
 		alterAssetsAddSource,
 		alterAssetsAddSourceID,
@@ -677,6 +688,68 @@ CREATE TABLE IF NOT EXISTS state_snapshots (
 	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
 );`
 
+// Hybrid guided-crawl captures keep full HTTP messages in a sealed layer. The
+// ordinary interaction/search/report tables receive only redacted metadata.
+// Importing these rows is passive; replay is a separate, explicitly authorized
+// operation.
+const createCaptureSessionsTable = `
+CREATE TABLE IF NOT EXISTS capture_sessions (
+	id TEXT PRIMARY KEY,
+	target_id TEXT NOT NULL,
+	source TEXT NOT NULL,
+	identity_id TEXT DEFAULT '',
+	identity_label TEXT DEFAULT '',
+	label TEXT DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'imported',
+	imported_count INTEGER DEFAULT 0,
+	accepted_count INTEGER DEFAULT 0,
+	rejected_count INTEGER DEFAULT 0,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	expires_at DATETIME,
+	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE
+);`
+
+const createRequestTemplatesTable = `
+CREATE TABLE IF NOT EXISTS request_templates (
+	id TEXT PRIMARY KEY,
+	target_id TEXT NOT NULL,
+	capture_session_id TEXT NOT NULL,
+	identity_id TEXT DEFAULT '',
+	method TEXT NOT NULL DEFAULT 'GET',
+	norm_url TEXT NOT NULL DEFAULT '',
+	content_type TEXT DEFAULT '',
+	operation_kind TEXT NOT NULL DEFAULT 'unknown',
+	request_shape_hash TEXT NOT NULL,
+	encrypted_request TEXT NOT NULL,
+	redacted_preview TEXT DEFAULT '',
+	replay_policy TEXT NOT NULL DEFAULT 'manual_only',
+	preflight_status TEXT NOT NULL DEFAULT 'not_run',
+	preflight_http_status INTEGER DEFAULT 0,
+	preflight_reason TEXT DEFAULT '',
+	preflight_at DATETIME,
+	source TEXT NOT NULL,
+	sequence INTEGER NOT NULL DEFAULT 0,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	UNIQUE(capture_session_id, request_shape_hash),
+	FOREIGN KEY (target_id) REFERENCES targets(id) ON DELETE CASCADE,
+	FOREIGN KEY (capture_session_id) REFERENCES capture_sessions(id) ON DELETE CASCADE
+);`
+
+const createCapturedResponsesTable = `
+CREATE TABLE IF NOT EXISTS captured_responses (
+	id TEXT PRIMARY KEY,
+	request_template_id TEXT NOT NULL UNIQUE,
+	status INTEGER DEFAULT 0,
+	content_type TEXT DEFAULT '',
+	body_hash TEXT DEFAULT '',
+	encrypted_response TEXT DEFAULT '',
+	redacted_preview TEXT DEFAULT '',
+	response_len INTEGER DEFAULT 0,
+	timing_ms INTEGER DEFAULT 0,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY (request_template_id) REFERENCES request_templates(id) ON DELETE CASCADE
+);`
+
 // candidates is the unified pre-finding lifecycle (CANDIDATE→DETECTED→VERIFYING→
 // VERIFIED→CONFIRMED / REJECTED / INCONCLUSIVE / DUPLICATE). Detectors register a
 // candidate here; the VerificationOrchestrator promotes only what it can PROVE
@@ -959,6 +1032,7 @@ const alterNucleiFindingsAddConfidence = `ALTER TABLE nuclei_findings ADD COLUMN
 const alterNucleiFindingsAddCurlCommand = `ALTER TABLE nuclei_findings ADD COLUMN curl_command TEXT DEFAULT '';`
 const alterNucleiFindingsAddRequest = `ALTER TABLE nuclei_findings ADD COLUMN request TEXT DEFAULT '';`
 const alterNucleiFindingsAddResponse = `ALTER TABLE nuclei_findings ADD COLUMN response TEXT DEFAULT '';`
+const alterNucleiFindingsAddVerifiedAt = `ALTER TABLE nuclei_findings ADD COLUMN verified_at DATETIME;`
 
 const createTasksTable = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -1043,6 +1117,77 @@ CREATE TABLE IF NOT EXISTS notification_reads (
 	FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_notification_reads_user ON notification_reads(user_id, notification_id);`
+
+// Telegram is a deployment-wide control plane. The BotFather token is sealed
+// with the same AES-GCM secret box used for authenticated scan identities; the
+// raw token is never returned by the API or written to logs. Chat permissions
+// are deliberately chat-scoped because Telegram commands arrive with a chat id.
+const createTelegramConfigTable = `
+CREATE TABLE IF NOT EXISTS telegram_config (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	encrypted_bot_token TEXT NOT NULL DEFAULT '',
+	enabled INTEGER NOT NULL DEFAULT 0,
+	bot_username TEXT NOT NULL DEFAULT '',
+	last_error TEXT NOT NULL DEFAULT '',
+	last_connected_at DATETIME,
+	last_update_id INTEGER NOT NULL DEFAULT 0,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);`
+
+// The last processed update makes bot commands at-most-once across a process
+// restart. Without it, Telegram can redeliver a command that started a scan if
+// the process exits before the next long-poll confirms the previous offset.
+const alterTelegramConfigAddLastUpdateID = `ALTER TABLE telegram_config ADD COLUMN last_update_id INTEGER NOT NULL DEFAULT 0;`
+
+const createTelegramChatsTable = `
+CREATE TABLE IF NOT EXISTS telegram_chats (
+	id TEXT PRIMARY KEY,
+	chat_id TEXT NOT NULL UNIQUE,
+	label TEXT NOT NULL DEFAULT '',
+	role TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('viewer','operator','admin')),
+	enabled INTEGER NOT NULL DEFAULT 1,
+	notify_scan_started INTEGER NOT NULL DEFAULT 1,
+	notify_phase_finished INTEGER NOT NULL DEFAULT 1,
+	notify_scan_finished INTEGER NOT NULL DEFAULT 1,
+	notify_findings INTEGER NOT NULL DEFAULT 1,
+	notify_monitoring INTEGER NOT NULL DEFAULT 1,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_chats_enabled ON telegram_chats(enabled, chat_id);`
+
+// Notifications are persisted before delivery. This keeps phase/finding alerts
+// reliable across restarts and gives each chat independent retry/dedup state.
+const createTelegramOutboxTable = `
+CREATE TABLE IF NOT EXISTS telegram_outbox (
+	id TEXT PRIMARY KEY,
+	chat_entry_id TEXT NOT NULL,
+	event_key TEXT NOT NULL,
+	category TEXT NOT NULL,
+	message TEXT NOT NULL,
+	keyboard_json TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL DEFAULT 'pending',
+	attempts INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	next_attempt_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+	sent_at DATETIME,
+	UNIQUE(chat_entry_id, event_key),
+	FOREIGN KEY (chat_entry_id) REFERENCES telegram_chats(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_outbox_pending ON telegram_outbox(status, next_attempt_at, created_at);`
+
+const createTelegramAuditLogTable = `
+CREATE TABLE IF NOT EXISTS telegram_audit_log (
+	id TEXT PRIMARY KEY,
+	chat_id TEXT NOT NULL,
+	action TEXT NOT NULL,
+	resource TEXT NOT NULL DEFAULT '',
+	status TEXT NOT NULL,
+	detail TEXT NOT NULL DEFAULT '',
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_audit_created ON telegram_audit_log(created_at DESC);`
 
 const createVulnFindingsTable = `
 CREATE TABLE IF NOT EXISTS vuln_findings (

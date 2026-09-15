@@ -189,15 +189,13 @@ type Config struct {
 	// never replaces the built-in list, only extends it. Passed as nuclei's
 	// -eid flag.
 	NucleiExcludeTemplateIDs []string `json:"nuclei_exclude_template_ids"`
-	// ScanWatchdogHours bounds a single scan so a wedged module can never hold
+	// ScanWatchdogHours bounds one scan PHASE so a wedged module can never hold
 	// its concurrency slot forever (the actual purpose — see scheduler.go). It
-	// is NOT meant to cut off a legitimately large bug-bounty target early: a
-	// domain with tens of thousands of subdomains can genuinely need well past
-	// a working day to crawl/probe/fuzz. 0 ⇒ built-in default (24h). The
-	// scheduler also ADDS adaptive headroom on top of this base for targets
-	// with a large known subdomain count from a prior scan (see
-	// scheduler.go's effectiveWatchdog) — this field is the FLOOR, not a hard
-	// ceiling that ignores target size.
+	// is deliberately reset after every completed phase, so the combined runtime
+	// of a healthy multi-phase scan is not capped. 0 ⇒ built-in default (24h).
+	// Each new phase also gets adaptive headroom based on the subdomains known at
+	// that point in the current run — this field is the FLOOR, not a hard ceiling
+	// that ignores target size.
 	ScanWatchdogHours int `json:"scan_watchdog_hours"`
 	// NetworkFullPortScan makes naabu scan all 65535 ports instead of the curated
 	// high-signal set. Slower but exhaustive; off by default.
@@ -603,7 +601,7 @@ func defaultConfig() *Config {
 		NucleiDAST:              false, // parameter-fuzzing templates are explicit opt-in
 		NucleiMaxSurfaces:       8000,  // cap canonical nuclei surfaces per target (post-dedup safety bound)
 		NucleiMaxPerHost:        2000,  // cap canonical surfaces contributed by any single host
-		ScanWatchdogHours:       24,    // base watchdog floor; scheduler adds adaptive headroom for large targets
+		ScanWatchdogHours:       24,    // per-phase watchdog floor; reset on progress and scaled for large targets
 		EnableDAST:              true,  // native context-aware DAST (XSS/SQLi) over all insertion points
 		AIEnabled:               true,
 		AIModel:                 "GLM-5.3-Flash",

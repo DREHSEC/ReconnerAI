@@ -406,16 +406,19 @@ func (s *ParamScanner) discoverForms(ctx context.Context, targetID, domain strin
 			if m := methodRE.FindStringSubmatch(form); len(m) > 1 && strings.EqualFold(m[1], "post") {
 				method = "POST"
 			}
-			if method != "POST" {
-				continue // GET forms are already covered by query-param testing
-			}
 			action := page
 			if a := actionRE.FindStringSubmatch(form); len(a) > 1 && a[1] != "" {
 				action = resolveURL(page, a[1])
 			}
-			contentType := "application/x-www-form-urlencoded"
-			if e := enctypeRE.FindStringSubmatch(form); len(e) > 1 && strings.TrimSpace(e[1]) != "" {
-				contentType = strings.ToLower(strings.TrimSpace(e[1]))
+			if !belongsToDomain(action, domain) || !urlHostInScope(ctx, action) || !urlInEndpointScope(ctx, action) {
+				continue
+			}
+			contentType := ""
+			if method == "POST" {
+				contentType = "application/x-www-form-urlencoded"
+				if e := enctypeRE.FindStringSubmatch(form); len(e) > 1 && strings.TrimSpace(e[1]) != "" {
+					contentType = strings.ToLower(strings.TrimSpace(e[1]))
+				}
 			}
 			for _, f := range parseFormFields(form) {
 				if s.storeFormParameterValue(targetID, action, f.name, f.value, method, contentType) {
@@ -432,13 +435,22 @@ func (s *ParamScanner) storeFormParameter(targetID, action, name, method, conten
 }
 
 func (s *ParamScanner) storeFormParameterValue(targetID, action, name, value, method, contentType string) bool {
-	location := "body"
-	if strings.Contains(strings.ToLower(contentType), "multipart/form-data") {
-		location = "multipart"
-	} else if strings.Contains(strings.ToLower(contentType), "xml") {
-		location = "xml"
-	} else if strings.Contains(strings.ToLower(contentType), "json") {
-		location = "json"
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	location := "query"
+	if method != http.MethodGet {
+		location = "body"
+		if strings.Contains(strings.ToLower(contentType), "multipart/form-data") {
+			location = "multipart"
+		} else if strings.Contains(strings.ToLower(contentType), "xml") {
+			location = "xml"
+		} else if strings.Contains(strings.ToLower(contentType), "json") {
+			location = "json"
+		}
+	} else {
+		contentType = ""
 	}
 	id := uuid.New().String()
 	_, err := s.db.Exec(`

@@ -48,6 +48,16 @@ func TestBrowserXSSConfirmLive(t *testing.T) {
 			document.getElementById('app').innerHTML = p;
 		</script></body></html>`)
 	})
+	// TRANSIENT DOM FLOW: the canary reaches innerHTML and is immediately removed.
+	// A post-render outerHTML grep cannot see it; runtime sink instrumentation must
+	// retain the flow and route it to the execution ladder.
+	mux.HandleFunc("/transient", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body><div id=app></div><script>
+			var p = new URLSearchParams(location.search).get('q');
+			app.innerHTML = p; app.textContent = '';
+		</script></body></html>`)
+	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -72,5 +82,18 @@ func TestBrowserXSSConfirmLive(t *testing.T) {
 		t.Errorf("SPA endpoint: expected browser to confirm client-rendered XSS, got none")
 	} else {
 		t.Logf("SPA confirmed with payload: %s", pl)
+	}
+
+	transient := insertionPoint{URL: srv.URL + "/transient?q=hi", Param: "q", Method: "GET", Location: "query"}
+	if !b.DOMReflectsInsertion(ctx, transient, nil) {
+		t.Fatal("runtime instrumentation missed a transient innerHTML flow")
+	}
+	if trace := b.RuntimeTrace(transient, nil); !strings.Contains(trace, "Element.innerHTML") {
+		t.Fatalf("runtime trace did not identify the sink: %q", trace)
+	}
+	if pl, ok := b.ConfirmInsertion(ctx, transient, nil); !ok {
+		t.Error("transient runtime-routed DOM XSS did not execute")
+	} else {
+		t.Logf("Transient DOM XSS confirmed with payload: %s", pl)
 	}
 }

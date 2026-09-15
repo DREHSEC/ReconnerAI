@@ -978,12 +978,20 @@ func serverReflectsDOMSource(ctx context.Context, pageURL, mode, param string, a
 // the opposite of the static candidate flood. Bounded by a page budget because each
 // page is a full browser navigation.
 func VerifyDOMXSSOnPages(ctx context.Context, db *database.DB, targetID string, logFn LogFunc) {
-	b := getXSSBrowser()
-	if b == nil {
+	if ctx.Err() != nil {
 		return
 	}
 	pages := loadDOMPageTargets(ctx, db, targetID, 250)
 	if len(pages) == 0 {
+		return
+	}
+	logFn("info", "dom_xss", fmt.Sprintf("Page-level DOM verification has %d eligible route(s), independent of parameter discovery.", len(pages)))
+	if ctx.Err() != nil {
+		return
+	}
+	b := getXSSBrowser()
+	if b == nil {
+		logFn("warn", "dom_xss", "Chromium unavailable; DOM execution remains unverified.")
 		return
 	}
 	auth := loadAuthHeaders(ctx, db, targetID)
@@ -1090,7 +1098,7 @@ func VerifyDOMXSSOnPages(ctx context.Context, db *database.DB, targetID string, 
 				}
 			}
 			ev := fmt.Sprintf(
-				"DOM XSS EXECUTION CONFIRMED in a real headless browser: a payload placed in the page's %s executed and changed the document title to a random nonce after the page rendered. Reflection alone cannot produce this proof.\n  Working PoC (open in a browser — it pops alert(document.domain)): %s\n  Payload: %s",
+				"DOM XSS EXECUTION CONFIRMED in a real headless browser: a payload placed in the page's %s executed, changed the document title to a random nonce, and showed alert('reconner') after the page rendered. Reflection alone cannot produce the nonce proof.\n  Working non-exfiltrating PoC (open in a browser — it shows alert('reconner')): %s\n  Payload: %s",
 				src, poc, pl)
 			_, _ = RecordDetectorObservation(ctx, db, DetectorObservation{
 				TargetID: targetID, Type: "dom_xss", Subtype: test.mode, Severity: "high",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -42,9 +43,15 @@ const (
 
 // formInfo is a discovered HTML form (rendered).
 type formInfo struct {
-	Action string   `json:"action"`
-	Method string   `json:"method"`
-	Inputs []string `json:"inputs"`
+	Action   string          `json:"action"`
+	Method   string          `json:"method"`
+	Encoding string          `json:"encoding"`
+	Inputs   []formInputInfo `json:"inputs"`
+}
+
+type formInputInfo struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // pageSurface is what one rendered page yields.
@@ -61,7 +68,12 @@ const extractJS = `(() => {
   const forms = [...document.forms].map(f => ({
     action: f.action || location.href,
     method: (f.method || 'get').toLowerCase(),
-    inputs: [...f.elements].map(e => e.name).filter(Boolean)
+    encoding: (f.enctype || '').toLowerCase(),
+    inputs: [...f.elements]
+      .filter(e => e.name && !e.matches(':disabled') &&
+        !['submit', 'button', 'reset', 'file'].includes(e.type) &&
+        (!['checkbox', 'radio'].includes(e.type) || e.checked))
+      .map(e => ({name: e.name, value: e.type === 'file' ? '' : (e.value || '')}))
   }));
   return JSON.stringify({links: [...new Set(links)].slice(0,500), forms: forms.slice(0,50)});
 })()`
@@ -97,7 +109,7 @@ func (c *HeadlessCrawler) Run(ctx context.Context, targetID string, logFn LogFun
 		chromedp.Flag("blink-settings", "imagesEnabled=false"), // faster: skip images
 		chromedp.NoDefaultBrowserCheck,
 	)
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, opts...)
 	defer cancelAlloc()
 	noop := func(string, ...interface{}) {}
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx, chromedp.WithErrorf(noop), chromedp.WithLogf(noop))
@@ -130,8 +142,11 @@ func (c *HeadlessCrawler) Run(ctx context.Context, targetID string, logFn LogFun
 
 	pages := 0
 	var params []paramEntry
-	pushParam := func(u, name, source string) {
-		params = append(params, paramEntry{URL: u, Param: name, Value: "", Source: source})
+	pushParam := func(u, name, value, source, method, contentType, location string) {
+		params = append(params, paramEntry{
+			URL: u, Param: name, Value: value, Source: source,
+			Method: method, ContentType: contentType, Location: location,
+		})
 	}
 
 	for len(queue) > 0 && pages < headlessMaxPages {
@@ -157,12 +172,12 @@ func (c *HeadlessCrawler) Run(ctx context.Context, targetID string, logFn LogFun
 				continue
 			}
 			lu.Fragment = ""
-			if !c.inScope(lu.Hostname(), domain) {
+			if !c.inScope(lu.Hostname(), domain) || !urlHostInScope(ctx, lu.String()) || !urlInEndpointScope(ctx, lu.String()) {
 				continue
 			}
 			for name := range lu.Query() {
 				if name != "" && !isJunkParam(name) {
-					pushParam(lu.String(), name, "headless")
+					pushParam(lu.String(), name, lu.Query().Get(name), "headless", http.MethodGet, "", "query")
 				}
 			}
 			norm := lu.String()
@@ -174,13 +189,30 @@ func (c *HeadlessCrawler) Run(ctx context.Context, targetID string, logFn LogFun
 		// forms → each named input is an insertion point (with the form's method).
 		for _, f := range surf.Forms {
 			fa, err := url.Parse(f.Action)
-			if err != nil || !c.inScope(fa.Hostname(), domain) {
+			if err != nil || !c.inScope(fa.Hostname(), domain) || !urlHostInScope(ctx, fa.String()) || !urlInEndpointScope(ctx, fa.String()) {
 				continue
 			}
-			src := "headless-form"
+			method := strings.ToUpper(strings.TrimSpace(f.Method))
+			if method != http.MethodPost {
+				method = http.MethodGet
+			}
+			contentType, location := "", "query"
+			if method == http.MethodPost {
+				contentType = strings.ToLower(strings.TrimSpace(f.Encoding))
+				if contentType == "" {
+					contentType = "application/x-www-form-urlencoded"
+				}
+				location = "body"
+				if strings.Contains(contentType, "multipart/form-data") {
+					location = "multipart"
+				}
+			}
 			for _, in := range f.Inputs {
-				if in != "" && !isJunkParam(in) {
-					pushParam(fa.String(), in, src)
+				// Preserve every successful form control, including CSRF/action
+				// plumbing: downstream injectors need those values as required
+				// siblings even when the field itself is not a useful candidate.
+				if in.Name != "" {
+					pushParam(fa.String(), in.Name, in.Value, "headless-form", method, contentType, location)
 				}
 			}
 		}
@@ -262,14 +294,30 @@ func (c *HeadlessCrawler) storeParams(ctx context.Context, targetID string, para
 		if !urlInEndpointScope(ctx, p.URL) {
 			continue
 		}
-		method, contentType, location := "GET", "", "query"
-		if strings.Contains(p.Source, "form") {
-			method, contentType, location = "POST", "application/x-www-form-urlencoded", "body"
+		method := strings.ToUpper(strings.TrimSpace(p.Method))
+		contentType := strings.TrimSpace(p.ContentType)
+		location := strings.ToLower(strings.TrimSpace(p.Location))
+		if method == "" {
+			method = http.MethodGet
+			if strings.Contains(p.Source, "form") {
+				method = http.MethodPost
+			}
+		}
+		if location == "" {
+			location = "query"
+			if method != http.MethodGet {
+				location = "body"
+			}
+		}
+		if method != http.MethodGet && contentType == "" {
+			contentType = "application/x-www-form-urlencoded"
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO parameters (id,target_id,url,parameter,value,source,method,content_type,location)
 			VALUES (?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(target_id,url,parameter,method,location,content_type) DO NOTHING`,
+			ON CONFLICT(target_id,url,parameter,method,location,content_type) DO UPDATE SET
+				value=CASE WHEN excluded.value<>'' THEN excluded.value ELSE parameters.value END,
+				source=CASE WHEN parameters.source='' THEN excluded.source ELSE parameters.source END`,
 			uuid.New().String(), targetID, p.URL, p.Param, p.Value, p.Source, method, contentType, location); err == nil {
 			stored++
 		}

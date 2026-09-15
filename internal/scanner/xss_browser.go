@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	cdppage "github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
 
@@ -47,11 +48,11 @@ import (
 //     any graceful-exit path. sweepStaleBrowserProfiles() also removes profiles
 //     orphaned by a previous hard kill at process start.
 //
-// Detection had to be title-based rather than alert()-dialog-based: chromedp only
-// reliably delivers Page.javascriptDialogOpening on the FIRST navigation of a
-// fresh browser, so a dialog design forces a browser-per-navigation (the leak).
-// Reading document.title after each navigation has no such limitation and lets one
-// tab serve the whole scan.
+// Detection remains title-based because dialog events are not reliable enough to
+// be the sole proof across repeated navigations. The proof payload also calls
+// alert('reconner') for a conventional human-visible PoC; the title nonce is set
+// first, and the dialog is automatically dismissed so the reusable tab cannot be
+// left blocked.
 //
 // Best-effort: if no Chromium/Chrome binary is present the confirmer disables
 // itself and callers fall back to the browserless verifier, so a scan never fails
@@ -85,6 +86,7 @@ var (
 
 type domReflectEntry struct {
 	reflected bool
+	trace     string
 	at        time.Time
 }
 
@@ -214,6 +216,16 @@ func (b *browserXSSConfirmer) ensureTab() (context.Context, bool) {
 	noop := func(string, ...interface{}) {}
 	tabCtx, tabCancel := chromedp.NewContext(b.alloc,
 		chromedp.WithErrorf(noop), chromedp.WithLogf(noop))
+	chromedp.ListenTarget(tabCtx, func(event any) {
+		if _, ok := event.(*cdppage.EventJavascriptDialogOpening); !ok {
+			return
+		}
+		// Never leave the shared confirmation tab blocked by the proof popup (or
+		// by an application dialog encountered during navigation).
+		go func() {
+			_ = chromedp.Run(tabCtx, cdppage.HandleJavaScriptDialog(true))
+		}()
+	})
 
 	// Bind the primary target to this long-lived context by running the first action
 	// on tabCtx DIRECTLY. chromedp ties the target's lifecycle to the context of its
@@ -274,12 +286,22 @@ func (b *browserXSSConfirmer) scriptLoaderPage() string {
 	return b.loaderURL
 }
 
-// xssBrowserPayloads are context-spanning payloads whose executed JavaScript sets
-// document.title to the nonce (%s). Reading that nonce back from document.title is
-// unambiguous execution proof across HTML-text, tag-attribute, and JS-string
-// contexts. Kept small so a candidate costs only a handful of navigations.
+const xssBrowserProofExpression = `(top.document.title='%s',alert('reconner'))`
+
+func addXSSPopupProof(templates []string) []string {
+	out := make([]string, 0, len(templates))
+	for _, tmpl := range templates {
+		out = append(out, strings.ReplaceAll(tmpl, `top.document.title='%s'`, xssBrowserProofExpression))
+	}
+	return out
+}
+
+// xssBrowserPayloads are context-spanning proof payloads. Executed JavaScript
+// first sets document.title to the random nonce (%s), which is the machine-
+// verifiable signal, and then shows alert('reconner') as the conventional visual
+// PoC. Neither operation reads or transmits application data.
 func xssBrowserPayloads() []string {
-	return []string{
+	return addXSSPopupProof([]string{
 		// Clean HTML vectors (raw-string quotes do not need backslashes).
 		`<img src=x onerror="top.document.title='%s'">`,
 		`<img src=x onerror=top.document.title='%s'>`,
@@ -304,7 +326,7 @@ func xssBrowserPayloads() []string {
 		`</script><script>top.document.title='%s'</script>`,
 		`';top.document.title='%s';//`,
 		`"><script>top.document.title='%s'</script>`,
-	}
+	})
 }
 
 // xssBrowserPayloadsForAnalysis keeps runtime verification context-aware. The
@@ -370,7 +392,7 @@ func xssBrowserPayloadsForAnalysis(a *ReflectionAnalysis) []string {
 			deduped = append(deduped, p)
 		}
 	}
-	return deduped
+	return addXSSPopupProof(deduped)
 }
 
 func randNonce() string {
@@ -380,11 +402,10 @@ func randNonce() string {
 }
 
 // Confirm loads rawURL with each payload injected into param and reports the first
-// payload that actually executes in the browser. The returned payload is the
-// ALERT-equivalent of the winning vector (document.title→alert(document.domain))
-// so the report's PoC actually POPS for a human, while detection stays title-based
-// (chromedp cannot reliably observe alert dialogs). ok=false means no execution was
-// observed (not vulnerable, or safely encoded/escaped by the app).
+// payload that actually executes in the browser. The returned payload is the exact
+// proof that ran: it sets a nonce title and shows alert('reconner'), without reading
+// or sending application data. ok=false means no execution was observed (not
+// vulnerable, or safely encoded/escaped by the app).
 func (b *browserXSSConfirmer) Confirm(parent context.Context, rawURL, param string) (payload string, ok bool) {
 	return b.ConfirmInsertion(parent, insertionPoint{URL: rawURL, Param: param, Method: "GET", Location: "query"}, nil)
 }
@@ -434,8 +455,7 @@ func (b *browserXSSConfirmer) ConfirmInsertionWithAnalysis(parent context.Contex
 			}
 		}
 		if fired {
-			// same vector, but pop alert(document.domain) for the human PoC.
-			return strings.ReplaceAll(tmpl, `top.document.title='%s'`, `alert(document.domain)`), true
+			return pl, true
 		}
 	}
 	return "", false
@@ -450,13 +470,13 @@ func (b *browserXSSConfirmer) ConfirmScriptResource(parent context.Context, ip i
 	if b == nil || strings.EqualFold(strings.TrimSpace(ip.Method), "POST") {
 		return "", false
 	}
-	for _, tmpl := range []string{
+	for _, tmpl := range addXSSPopupProof([]string{
 		`top.document.title='%s'//`,
 		`;top.document.title='%s';//`,
 		`');top.document.title='%s';//`,
 		`"};top.document.title='%s';//`,
 		`);top.document.title='%s';//`,
-	} {
+	}) {
 		if parent.Err() != nil {
 			return "", false
 		}
@@ -467,7 +487,7 @@ func (b *browserXSSConfirmer) ConfirmScriptResource(parent context.Context, ip i
 			continue
 		}
 		if b.fireScriptResource(parent, req.URL.String(), auth, nonce) {
-			return strings.ReplaceAll(tmpl, `top.document.title='%s'`, `alert(document.domain)`), true
+			return pl, true
 		}
 	}
 	return "", false
@@ -512,7 +532,7 @@ func cachedDOMReflection(key string) (bool, bool) {
 	return e.reflected, true
 }
 
-func storeDOMReflection(key string, reflected bool) {
+func storeDOMReflection(key string, reflected bool, trace ...string) {
 	domReflectMemo.Lock()
 	defer domReflectMemo.Unlock()
 	if len(domReflectMemo.entries) >= domReflectMaxEntries {
@@ -526,7 +546,25 @@ func storeDOMReflection(key string, reflected bool) {
 			domReflectMemo.entries = map[string]domReflectEntry{}
 		}
 	}
-	domReflectMemo.entries[key] = domReflectEntry{reflected: reflected, at: time.Now()}
+	entry := domReflectEntry{reflected: reflected, at: time.Now()}
+	if len(trace) > 0 {
+		entry.trace = strings.TrimSpace(trace[0])
+	}
+	domReflectMemo.entries[key] = entry
+}
+
+func cachedDOMRuntimeTrace(key string) string {
+	domReflectMemo.Lock()
+	defer domReflectMemo.Unlock()
+	e, ok := domReflectMemo.entries[key]
+	if !ok || time.Since(e.at) >= domReflectTTL {
+		return ""
+	}
+	return e.trace
+}
+
+func (b *browserXSSConfirmer) RuntimeTrace(ip insertionPoint, auth map[string]string) string {
+	return cachedDOMRuntimeTrace(domReflectKey(ip, auth))
 }
 
 // DOMReflectsInsertion performs one inert rendered-DOM canary navigation before
@@ -558,6 +596,8 @@ func (b *browserXSSConfirmer) DOMReflectsInsertion(parent context.Context, ip in
 	}
 	ctx, cancel := context.WithTimeout(tab, 12*time.Second)
 	defer cancel()
+	removeInstrumentation := installRuntimeDOMInstrumentation(ctx, tab, canary)
+	defer removeInstrumentation()
 	headerActions, stopHeaders := scopedBrowserHeaderSession(ctx, tab, parent, []string{ip.URL}, auth)
 	defer stopHeaders()
 	var dom string
@@ -575,8 +615,10 @@ func (b *browserXSSConfirmer) DOMReflectsInsertion(parent context.Context, ip in
 		actions := append(headerActions, chromedp.Navigate(req.URL.String()), chromedp.Sleep(800*time.Millisecond), chromedp.Evaluate(`document.documentElement.outerHTML`, &dom))
 		_ = chromedp.Run(ctx, actions...)
 	}
-	reflected := strings.Contains(dom, canary)
-	storeDOMReflection(key, reflected)
+	hits := readRuntimeDOMHits(ctx)
+	trace := runtimeDOMHitSummary(hits)
+	reflected := strings.Contains(dom, canary) || len(hits) > 0
+	storeDOMReflection(key, reflected, trace)
 	return reflected
 }
 
@@ -643,12 +685,19 @@ func (b *browserXSSConfirmer) renderedDOMURLContains(parent context.Context, raw
 	}
 	ctx, cancel := context.WithTimeout(tab, 12*time.Second)
 	defer cancel()
+	removeInstrumentation := installRuntimeDOMInstrumentation(ctx, tab, canary)
+	defer removeInstrumentation()
 	headerActions, stopHeaders := scopedBrowserHeaderSession(ctx, tab, parent, []string{rawURL}, headers)
 	defer stopHeaders()
 	var dom string
 	actions := append(headerActions, chromedp.Navigate(rawURL), chromedp.Sleep(800*time.Millisecond), chromedp.Evaluate(`document.documentElement.outerHTML`, &dom))
 	_ = chromedp.Run(ctx, actions...)
-	return strings.Contains(dom, canary)
+	hits := readRuntimeDOMHits(ctx)
+	trace := runtimeDOMHitSummary(hits)
+	key := "dom-source\x00" + rawURL + "\x00" + authFingerprint(headers)
+	reflected := strings.Contains(dom, canary) || len(hits) > 0
+	storeDOMReflection(key, reflected, trace)
+	return reflected
 }
 
 // DOMSourceReflects is the source-mode preflight used by the broad DOM-XSS pass.
@@ -697,7 +746,8 @@ func (b *browserXSSConfirmer) DOMSourceReflects(parent context.Context, pageURL,
 // (the fragment for mode="hash", or a query param for mode="query") of pageURL and
 // observing it actually run in a real browser. This is real proof of DOM XSS — the
 // value flows from an attacker-controlled URL source, through the app's JS, into a
-// sink, and executes. Returns the alert-equivalent payload for the report PoC.
+// sink, and executes. The returned PoC is the exact nonce + alert('reconner')
+// payload observed by the scanner.
 func (b *browserXSSConfirmer) ConfirmDOMSource(parent context.Context, pageURL, mode, param string, auth map[string]string) (payload string, ok bool) {
 	if b == nil {
 		return "", false
@@ -744,7 +794,7 @@ func (b *browserXSSConfirmer) ConfirmDOMSource(parent context.Context, pageURL, 
 			}
 		}
 		if fired {
-			return strings.ReplaceAll(tmpl, `top.document.title='%s'`, `alert(document.domain)`), true
+			return pl, true
 		}
 	}
 	return "", false

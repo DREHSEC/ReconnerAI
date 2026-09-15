@@ -7,6 +7,7 @@ import { ws } from '../lib/websocket'
 import { useUIStore } from '../store/ui'
 import { useAuthStore } from '../store/auth'
 import { UsersAdmin } from '../components/system/UsersAdmin'
+import { TelegramIntegration } from '../components/system/TelegramIntegration'
 import { useUpdateCenter } from '../components/layout/UpdateCenter'
 
 interface SystemLogLine { level: string; module: string; message: string; time: string }
@@ -331,6 +332,7 @@ export default function System() {
             </div>
           </div>
           <div className="mb-4"><HunterCard /></div>
+          {isAdmin && <TelegramIntegration />}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
             <div>
               <h2 className="text-sm font-semibold">Passive intelligence providers</h2>

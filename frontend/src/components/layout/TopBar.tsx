@@ -19,7 +19,7 @@ const sevDot: Record<string, string> = {
 // target name via a tiny in-memory cache so breadcrumbs read like
 // "Targets › example.com" instead of a raw UUID.
 const SEGMENT_LABEL: Record<string, string> = {
-  targets: 'Targets', findings: 'Findings', tasks: 'Scan activity', system: 'System & updates',
+  targets: 'Targets', analyze: 'Guided Analyze', findings: 'Findings', tasks: 'Scan activity', system: 'System & updates',
 }
 
 function useBreadcrumbs(): { label: string; to: string }[] {

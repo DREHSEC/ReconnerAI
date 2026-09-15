@@ -39,6 +39,24 @@ func TestIssue7SubdomainRootsCoverEveryManagedAsset(t *testing.T) {
 	}
 }
 
+func TestMultiAssetCollectorsRunForEveryWebRootWithNarrowedScope(t *testing.T) {
+	roots := []string{"alpha.example", "beta.test", "gamma.invalid"}
+	var called []string
+	err := runWebRootFanout(context.Background(), ModuleParamDiscovery, roots, func(string, string, string) {}, func(ctx context.Context, root string) error {
+		called = append(called, root)
+		if ctx == nil {
+			t.Fatal("collector received a nil scoped context")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(called, roots) {
+		t.Fatalf("collector fan-out called=%v, want %v", called, roots)
+	}
+}
+
 func TestIssue7SubdomainFanoutContinuesAfterOneAssetFails(t *testing.T) {
 	roots := []string{"one.example", "two.example", "three.example"}
 	var called []string

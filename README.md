@@ -225,6 +225,35 @@ DOM-XSS row become a confirmed finding with an `alert(document.domain)` PoC.
 The evidence model, public-data prioritization and detector-by-detector upgrade
 plan are documented in the [vulnerability engine roadmap](docs/VULNERABILITY_ENGINE_ROADMAP.md).
 
+## Telegram control bot
+
+Administrators can connect a BotFather bot from **System → Integrations →
+Telegram**. The integration uses long polling, so the Reconner host does not
+need a public webhook. The token is encrypted at rest and the API never returns
+the raw value after it is saved.
+
+One bot can allowlist multiple private chats or trusted groups. Each chat has an
+independent role and notification policy:
+
+- **Viewer:** inspect platform status, targets, scans and validated findings.
+- **Operator:** start, pause, resume, cancel and skip the current scan phase.
+- **Admin:** also add, edit and delete targets; deletion requires confirmation.
+
+Scan start, every completed/failed/timed-out/skipped phase, final results,
+monitoring changes and validated findings can be toggled per chat. Alerts use a
+durable per-chat outbox with deduplication and retry, so a temporary Telegram
+failure or Reconner restart does not silently lose them. Buttons attached to
+scan messages expose Target, Pause, Resume, Cancel and **Skip phase** actions.
+
+After adding the bot to a chat, send `/start`. An unapproved chat replies with
+its numeric Chat ID; add that ID in the web panel, choose `viewer`, `operator`
+or `admin`, then use **Test** to verify delivery. Chat roles apply to everyone
+in that chat, so reserve `admin` for private chats or fully trusted groups.
+
+Available commands include `/status`, `/targets`, `/target`, `/scans`,
+`/findings`, `/scan`, `/pause`, `/resume`, `/skip` (also `/skipphase`),
+`/cancel`, `/addtarget`, `/edittarget` and `/deletetarget`.
+
 ## Network reconnaissance
 
 Network targets may be a single IP, CIDR or range. The pipeline covers port and

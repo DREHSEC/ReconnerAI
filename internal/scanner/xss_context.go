@@ -579,7 +579,7 @@ func (v *XSSContextVerifier) Verify(ctx context.Context, c VulnerabilityCandidat
 			if preflight == "" {
 				preflight = strings.TrimSpace(res.Reason)
 			}
-			evidence := "reflected XSS PROVEN in a real headless browser: the injected JavaScript changed document.title to a random nonce after the page rendered. Reflection alone cannot produce this proof. This works for client-rendered and SPA pages; the reported PoC is the alert(document.domain) equivalent. Executable payload: " + pl
+			evidence := "reflected XSS PROVEN in a real headless browser: the injected JavaScript changed document.title to a random nonce and showed alert('reconner') after the page rendered. Reflection alone cannot produce the nonce proof. This works for client-rendered and SPA pages; the reported PoC is the exact proof payload observed by the scanner. Executable payload: " + pl
 			if preflight != "" {
 				evidence += " | Browserless context preflight: " + preflight
 			}

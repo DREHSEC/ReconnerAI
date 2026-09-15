@@ -40,12 +40,32 @@ type DASTScanner struct {
 	cfg       *config.Config
 	logger    *logger.Logger
 	broadcast BroadcastFunc
+}
 
-	// browserBudget bounds how many insertion points may be escalated to the
-	// (slow, serialized) headless browser per scan — the DOM/SPA XSS path. Reset at
-	// the start of each run so a reflection-heavy target can't spend the whole scan
-	// in the browser.
-	browserBudget atomic.Int64
+// xssBrowserBudget belongs to one Run/RunXSS invocation. The scheduler reuses a
+// DASTScanner across tasks, so keeping this counter on DASTScanner let one scan
+// reset or consume another concurrent scan's allowance.
+type xssBrowserBudget struct{ remaining atomic.Int64 }
+
+func newXSSBrowserBudget(limit int64) *xssBrowserBudget {
+	b := &xssBrowserBudget{}
+	b.remaining.Store(limit)
+	return b
+}
+
+func (b *xssBrowserBudget) take() bool {
+	if b == nil {
+		return false
+	}
+	for {
+		remaining := b.remaining.Load()
+		if remaining <= 0 {
+			return false
+		}
+		if b.remaining.CompareAndSwap(remaining, remaining-1) {
+			return true
+		}
+	}
 }
 
 func NewDASTScanner(db *database.DB, cfg *config.Config, log *logger.Logger, broadcast BroadcastFunc) *DASTScanner {
@@ -106,21 +126,22 @@ func (s *DASTScanner) run(ctx context.Context, targetID string, logFn LogFunc, x
 	if xssOnly {
 		points = loadXSSInsertionPoints(ctx, s.db, targetID, pointLimit)
 	}
-	if len(points) == 0 {
-		logFn("info", label, "No insertion points to test.")
-		return nil
-	}
 	auth := loadAuthHeaders(ctx, s.db, targetID)
-	// Reset the per-scan headless-browser budget. Params whose reflection is NOT
+	// Create a per-run headless-browser budget. Params whose reflection is NOT
 	// visible in raw HTML (client-rendered / SPA / DOM sinks) are escalated to a real
 	// browser — but only up to this many, so a huge target can't stall in the browser.
-	s.browserBudget.Store(dastBrowserBudget)
-	logFn("info", label, fmt.Sprintf("Context-aware reflected-XSS analysis over %d insertion point(s)...", len(points)))
+	browserBudget := newXSSBrowserBudget(dastBrowserBudget)
+	if len(points) == 0 {
+		logFn("info", label, "No parameter insertion points to test; continuing with page-level DOM XSS verification.")
+	} else {
+		logFn("info", label, fmt.Sprintf("Context-aware reflected-XSS analysis over %d insertion point(s)...", len(points)))
+	}
 
 	var xssConfirmed, xssRejected, sqliCand int64
 	sem := make(chan struct{}, dastWorkers)
 	var wg sync.WaitGroup
 
+pointLoop:
 	for _, ip := range points {
 		if ctx.Err() != nil {
 			break
@@ -128,12 +149,16 @@ func (s *DASTScanner) run(ctx context.Context, targetID string, logFn LogFunc, x
 		if ip.Param == "" {
 			continue
 		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break pointLoop
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(ip insertionPoint) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			res := s.testPoint(ctx, targetID, ip, auth, xssOnly)
+			res := s.testPoint(ctx, targetID, ip, auth, xssOnly, browserBudget)
 			atomic.AddInt64(&xssConfirmed, int64(res.xssConfirmed))
 			atomic.AddInt64(&xssRejected, int64(res.xssRejected))
 			atomic.AddInt64(&sqliCand, int64(res.sqliCand))
@@ -143,8 +168,11 @@ func (s *DASTScanner) run(ctx context.Context, targetID string, logFn LogFunc, x
 
 	// Promote static DOM-XSS leads to PROVEN findings: drive a real browser to place
 	// an executing payload in each page's location.hash / a query param and confirm
-	// it actually runs. This is the real evidence (a popup PoC), not a static grep.
-	VerifyDOMXSSOnPages(ctx, s.db, targetID, logFn)
+	// it actually runs. This is nonce-backed alert('reconner') execution evidence,
+	// not a static grep.
+	if ctx.Err() == nil {
+		VerifyDOMXSSOnPages(ctx, s.db, targetID, logFn)
+	}
 
 	if xssOnly {
 		logFn("warn", label, fmt.Sprintf("XSS analysis done. XSS confirmed=%d, encoded-reflections rejected=%d.", xssConfirmed, xssRejected))
@@ -153,7 +181,7 @@ func (s *DASTScanner) run(ctx context.Context, targetID string, logFn LogFunc, x
 			"DAST done. XSS confirmed=%d, encoded-reflections rejected=%d, error-based SQLi candidates=%d.",
 			xssConfirmed, xssRejected, sqliCand))
 	}
-	return nil
+	return ctx.Err()
 }
 
 type dastOutcome struct {
@@ -162,7 +190,7 @@ type dastOutcome struct {
 	sqliCand     int
 }
 
-func (s *DASTScanner) testPoint(ctx context.Context, targetID string, ip insertionPoint, auth map[string]string, xssOnly bool) dastOutcome {
+func (s *DASTScanner) testPoint(ctx context.Context, targetID string, ip insertionPoint, auth map[string]string, xssOnly bool, browserBudget *xssBrowserBudget) dastOutcome {
 	var out dastOutcome
 	if ctx.Err() != nil {
 		return out
@@ -200,7 +228,7 @@ func (s *DASTScanner) testPoint(ctx context.Context, targetID string, ip inserti
 			// the old MIME gate rejected them before testing the browser's script
 			// resource execution path. Only Chromium can prove this class faithfully
 			// because it applies MIME/nosniff/CORS/resource-loading semantics itself.
-			if b := getXSSBrowser(); b != nil && s.takeBrowserBudget() {
+			if b := getXSSBrowser(); b != nil && browserBudget.take() {
 				if pl, ok := b.ConfirmScriptResource(ctx, ip, auth); ok {
 					s.confirmXSS(ctx, targetID, ip, "script_resource", pl, "browser", 99)
 					out.xssConfirmed++
@@ -237,14 +265,14 @@ func (s *DASTScanner) testPoint(ctx context.Context, targetID string, ip inserti
 					return
 				}
 				proofAttempted = true
-				proofPayload, proofMethod, proofConfidence, proofExecuted = s.proveExecutingXSS(ctx, ip, a, auth, baseline)
+				proofPayload, proofMethod, proofConfidence, proofExecuted = s.proveExecutingXSS(ctx, ip, a, auth, baseline, browserBudget)
 			}
 			// A URL attribute controlled from its first byte does not need a quote
 			// breakout: javascript: is itself the execution primitive. The benign
 			// marker-tag confirm below cannot prove this class, so send it directly
 			// to Chromium (which activates javascript: links) instead of silently
 			// leaving every scheme-only sink inconclusive.
-			if a.Context == CtxURL && a.URLScheme {
+			if getXSSBrowser() != nil || (a.Context == CtxURL && a.URLScheme) {
 				tryExecutionProof()
 				if proofExecuted {
 					s.confirmXSS(ctx, targetID, ip, a.Context, proofPayload, proofMethod, proofConfidence)
@@ -278,8 +306,8 @@ func (s *DASTScanner) testPoint(ctx context.Context, targetID string, ip inserti
 					htmlTagInjected(confResp.Body, dastElement) &&
 					!strings.Contains(baseline, needle) {
 					// HTML injection is proven. Now find a payload the app does NOT
-					// filter, so the REPORTED PoC actually pops (the dominant "finds
-					// XSS but no popup" gap): use browser execution proof when
+					// filter, so the reported PoC actually executes (the dominant
+					// "reflected markup but no execution" gap): use browser proof when
 					// available; only its absence permits the short candidate ladder.
 					tryExecutionProof()
 					if proofExecuted {
@@ -324,7 +352,7 @@ func (s *DASTScanner) testPoint(ctx context.Context, targetID string, ip inserti
 			cachedReflected, cached := cachedDOMReflection(domReflectKey(ip, auth))
 			// A cached negative from param_reflection costs no browser navigation
 			// here and therefore must not consume the limited escalation budget.
-			if (!cached || cachedReflected) && s.takeBrowserBudget() {
+			if (!cached || cachedReflected) && browserBudget.take() {
 				// One inert rendered-DOM canary eliminates parameters that are not
 				// consumed client-side. The old path immediately sprayed the complete
 				// browser payload ladder (up to ~20 serialized navigations) at every
@@ -332,7 +360,7 @@ func (s *DASTScanner) testPoint(ctx context.Context, targetID string, ip inserti
 				// already shown it was inert.
 				if b.DOMReflectsInsertion(ctx, ip, auth) {
 					if pl, ok := b.ConfirmInsertion(ctx, ip, auth); ok {
-						s.confirmXSS(ctx, targetID, ip, "dom", pl, "browser", 99)
+						s.confirmXSS(ctx, targetID, ip, "dom", pl, "browser", 99, b.RuntimeTrace(ip, auth))
 						out.xssConfirmed++
 					}
 				}
@@ -571,12 +599,12 @@ func exploitExample(ctxName, injected string) string {
 // branch, CSP edge case or parser difference can all make executable-looking
 // markup non-executing. This distinction is what keeps reflected HTML injection
 // out of the confirmed-XSS bucket.
-func (s *DASTScanner) proveExecutingXSS(ctx context.Context, ip insertionPoint, a ReflectionAnalysis, auth map[string]string, baseline string) (payload, proof string, confidence int, executed bool) {
+func (s *DASTScanner) proveExecutingXSS(ctx context.Context, ip insertionPoint, a ReflectionAnalysis, auth map[string]string, baseline string, browserBudget *xssBrowserBudget) (payload, proof string, confidence int, executed bool) {
 	// Real-browser execution is the only promotion path, so run it first. The old
 	// order sprayed the complete raw-response ladder (often 30+ requests) and then
 	// performed the browser proof that actually decided the verdict.
 	if b := getXSSBrowser(); b != nil {
-		if s.takeBrowserBudget() {
+		if browserBudget.take() {
 			if pl, ok := b.ConfirmInsertionWithAnalysis(ctx, ip, auth, &a); ok {
 				return pl, "browser", 99, true
 			}
@@ -600,18 +628,6 @@ func (s *DASTScanner) proveExecutingXSS(ctx context.Context, ip insertionPoint, 
 		}
 	}
 	return "", "inconclusive", ConfCandidateLo, false
-}
-
-func (s *DASTScanner) takeBrowserBudget() bool {
-	for {
-		remaining := s.browserBudget.Load()
-		if remaining <= 0 {
-			return false
-		}
-		if s.browserBudget.CompareAndSwap(remaining, remaining-1) {
-			return true
-		}
-	}
 }
 
 // cspAllowsInlineScript reports whether response CSP permits the inline event/
@@ -658,16 +674,23 @@ func (s *DASTScanner) xssCandidate(targetID string, ip insertionPoint, ctxName, 
 // confirmXSS records a CONFIRMED reflected-XSS candidate + a finding. Callers may
 // invoke it only for a browser-observed nonce; browserless differential evidence
 // remains a candidate and never reaches this method.
-func (s *DASTScanner) confirmXSS(ctx context.Context, targetID string, ip insertionPoint, ctxName, execPayload, proof string, confidence int) {
+func (s *DASTScanner) confirmXSS(ctx context.Context, targetID string, ip insertionPoint, ctxName, execPayload, proof string, confidence int, runtimeTrace ...string) {
+	if ctx.Err() != nil || strings.TrimSpace(execPayload) == "" ||
+		(proof != "browser" && proof != "browser+differential") {
+		return
+	}
 	var how string
 	switch proof {
 	case "browser", "browser+differential":
-		how = "EXECUTION CONFIRMED in a real headless browser (JavaScript changed document.title to our random nonce; the reported PoC uses alert(document.domain))"
+		how = "EXECUTION CONFIRMED in a real headless browser (JavaScript changed document.title to our random nonce and showed alert('reconner'); the reported PoC is the exact proof payload)"
 	default:
 		how = "EXECUTION CONFIRMED in a real headless browser using a random document.title nonce"
 	}
 	ev := fmt.Sprintf("Reflected XSS in %s context at parameter %q. %s. Working payload: %s",
 		ctxName, ip.Param, how, execPayload)
+	if len(runtimeTrace) > 0 && strings.TrimSpace(runtimeTrace[0]) != "" {
+		ev += ". Runtime DOM trace: attacker-controlled canary reached " + strings.TrimSpace(runtimeTrace[0])
+	}
 	c := VulnerabilityCandidate{
 		TargetID: targetID, Type: "xss", Subtype: "reflected", URL: ip.URL,
 		Method: ip.Method, Parameter: ip.Param, Location: locOf(ip),

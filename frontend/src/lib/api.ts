@@ -140,6 +140,62 @@ export const targets = {
   },
 }
 
+export interface CapturePreviewItem {
+  sequence: number; method: string; route: string; status: number
+  operation_kind: string; sensitive: boolean; header_names?: string[]
+  request_body_bytes: number; response_body_bytes: number
+  accepted: boolean; reject_reason?: string; suggested_tests?: string[]; auto_eligible: boolean
+}
+
+export interface CapturePreview {
+  source: string; total: number; accepted: number; rejected: number; sensitive: number
+  read_only: number; state_changing: number; authentication: number; unknown: number
+  items: CapturePreviewItem[]
+}
+
+export interface CapturedRequest { method: string; url: string; http_version?: string; headers: { name: string; value: string }[]; body: string | null; mime_type: string }
+export interface GuidedFinding { type: string; parameter: string; severity: string; verdict: string; evidence: string; payload: string; test_case?: CapturedRequest; finding_id?: string }
+export interface GuidedReport { results?: { template_id: string; module: string; status: string; reason: string; requests: number; findings: GuidedFinding[] }[]; manual_modules?: Record<string, string> }
+export interface GuidedRun { id: string; task_id: string; status: string; report: GuidedReport; created_at: string }
+export interface GuidedOpportunity { module: string; parameter: string; location: string; confidence: number; reason: string; payloads?: string[]; automated: boolean }
+export interface GuidedCheck { template_id: string; module: string }
+export interface CaptureTemplate { id: string; method: string; route: string; kind: string; preflight_status: string; version: string; suggestions: GuidedOpportunity[] }
+export interface CapturePreflight {
+  capture_id: string; ready: number; blocked: number; failed_or_stale: number
+  requests_sent: number; mutations_sent: number; mode: string
+  results: { template_id: string; method: string; route: string; status: string; http_status: number; captured_status: number; baseline_match: boolean; reason: string; timing_ms: number }[]
+}
+
+function captureForm(file: File, source: string, identityLabel: string, label: string) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('source', source)
+  form.append('identity_label', identityLabel)
+  form.append('label', label)
+  return form
+}
+
+export const captures = {
+  remove: (targetId: string, captureId: string) => req<{ deleted: boolean }>(`/targets/${targetId}/captures/${captureId}`, { method: 'DELETE' }),
+  templates: (targetId: string, captureId: string) => req<CaptureTemplate[]>(`/targets/${targetId}/captures/${captureId}/templates`),
+  reveal: (targetId: string, captureId: string, id: string) => req<{ request: CapturedRequest; version: string }>(`/targets/${targetId}/captures/${captureId}/templates/${id}/reveal`, { method: 'POST' }),
+  edit: (targetId: string, captureId: string, id: string, request: CapturedRequest, version: string) => req<{ version: string }>(`/targets/${targetId}/captures/${captureId}/templates/${id}`, { method: 'PUT', body: JSON.stringify({ request, version }) }),
+  analyze: (targetId: string, captureId: string, template_ids: string[], modules: string[], allow_unsafe: boolean) => req<{ run_id: string; task_id: string }>(`/targets/${targetId}/captures/${captureId}/analyze`, { method: 'POST', body: JSON.stringify({ template_ids, modules, allow_unsafe, confirm_active: true }) }),
+  analyzeChecks: (targetId: string, captureId: string, checks: GuidedCheck[], allow_unsafe: boolean) => req<{ run_id: string; task_id: string }>(`/targets/${targetId}/captures/${captureId}/analyze`, { method: 'POST', body: JSON.stringify({ checks, allow_unsafe, confirm_active: true }) }),
+  runs: (targetId: string, captureId: string) => req<GuidedRun[]>(`/targets/${targetId}/captures/${captureId}/runs`),
+  revealReport: (targetId: string, captureId: string, id: string) => req<GuidedReport>(`/targets/${targetId}/captures/${captureId}/runs/${id}/reveal`, { method: 'POST' }),
+  preview: (targetId: string, file: File, source: string, identityLabel: string, label: string) =>
+    req<{ preview: CapturePreview; passive: boolean; traffic_sent: number }>(`/targets/${targetId}/captures/preview`, {
+      method: 'POST', headers: {}, body: captureForm(file, source, identityLabel, label),
+    }),
+  import: (targetId: string, file: File, source: string, identityLabel: string, label: string) =>
+    req<{ capture_id: string; preview: CapturePreview; templates_stored: number; passive: boolean; traffic_sent: number }>(`/targets/${targetId}/captures`, {
+      method: 'POST', headers: {}, body: captureForm(file, source, identityLabel, label),
+    }),
+  list: (targetId: string) => req<{ id: string; source: string; identity_label: string; label: string; status: string; imported: number; accepted: number; rejected: number; created_at: string; expires_at: string }[]>(`/targets/${targetId}/captures`),
+  preflight: (targetId: string, captureId: string, templateIds: string[] = []) => req<CapturePreflight>(`/targets/${targetId}/captures/${captureId}/preflight`, { method: 'POST', body: JSON.stringify({ template_ids: templateIds }) }),
+}
+
 export interface BountyProgramList {
   programs: BountyProgram[]
   total: number
@@ -224,6 +280,18 @@ export const tasks = {
 }
 
 export interface ApiKeyState { name: string; label: string; hint: string; set: boolean; masked: string }
+
+export type TelegramRole = 'viewer' | 'operator' | 'admin'
+export interface TelegramChat {
+  id: string; chat_id: string; label: string; role: TelegramRole; enabled: boolean
+  notify_scan_started: boolean; notify_phase_finished: boolean; notify_scan_finished: boolean
+  notify_findings: boolean; notify_monitoring: boolean; created_at: string; updated_at: string
+}
+export interface TelegramState {
+  configured: boolean; enabled: boolean; masked_token: string; bot_username: string
+  connected: boolean; last_error: string; last_connected_at: string
+  pending: number; failed: number; chats: TelegramChat[]
+}
 
 export interface ToolCatalogEntry {
   name: string; installed: boolean; method: string; command: string
@@ -329,6 +397,16 @@ export const system = {
     req<{ api_keys: ApiKeyState[]; ai?: AIStatus }>('/system/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
   ai: () => req<AIStatus>('/system/ai'),
   hunter: () => req<HunterStatus>('/system/hunter'),
+  telegram: () => req<TelegramState>('/system/telegram'),
+  updateTelegram: (patch: { bot_token?: string; enabled?: boolean }) =>
+    req<TelegramState>('/system/telegram', { method: 'PATCH', body: JSON.stringify(patch) }),
+  addTelegramChat: (chat: { chat_id: string; label: string; role: TelegramRole }) =>
+    req<TelegramChat>('/system/telegram/chats', { method: 'POST', body: JSON.stringify(chat) }),
+  updateTelegramChat: (id: string, patch: Partial<Omit<TelegramChat, 'id' | 'chat_id' | 'created_at' | 'updated_at'>>) =>
+    req<TelegramState>(`/system/telegram/chats/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  deleteTelegramChat: (id: string) => req<{ message: string }>(`/system/telegram/chats/${id}`, { method: 'DELETE' }),
+  testTelegramChat: (id: string) => req<{ message: string }>(`/system/telegram/chats/${id}/test`, { method: 'POST' }),
+  retryTelegram: () => req<{ message: string }>('/system/telegram/retry', { method: 'POST' }),
 }
 
 export const agent = {

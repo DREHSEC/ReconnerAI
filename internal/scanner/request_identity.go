@@ -202,6 +202,9 @@ func SkipRequestIdentity(req *http.Request) *http.Request {
 type identityRoundTripper struct{ base http.RoundTripper }
 
 func (t identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if g := guidedFrom(req.Context()); g != nil {
+		return g.roundTrip(req)
+	}
 	base := t.base
 	if base == nil {
 		base = http.DefaultTransport
