@@ -93,7 +93,10 @@ func TestApplyEnvFillsMissingJSONKeys(t *testing.T) {
 func TestNormalizeAIFillsNewKnobs(t *testing.T) {
 	c := &Config{}
 	c.NormalizeAI()
-	if c.AIMaxTokens != 8192 || c.AIHunterCycleMinutes != 12 || c.AIHunterHTTPPerMin != 20 {
+	if c.AIMaxTokens != 8192 || c.AIHunterCycleMinutes != 90 || c.AIHunterHTTPPerMin != 20 {
 		t.Fatalf("%+v", c)
+	}
+	if c.AIHunterIterations != 0 {
+		t.Fatalf("hunter iterations 0 = unlimited, got %d", c.AIHunterIterations)
 	}
 }

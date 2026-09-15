@@ -176,28 +176,48 @@ func looksLikeXSSNoise(title, body, playbook string) bool {
 	if strings.Contains(hay, "idor") || strings.Contains(hay, "bola") || strings.Contains(hay, "authz") {
 		return false
 	}
-	if strings.Contains(hay, "graphql") || strings.Contains(hay, "jwt") || strings.Contains(hay, ".env") || strings.Contains(hay, "takeover") {
+	if strings.Contains(hay, "graphql") || strings.Contains(hay, "ssrf") || strings.Contains(hay, ".env") || strings.Contains(hay, "takeover") {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(playbook)) {
-	case "reflection", "candidates":
+	if strings.Contains(hay, "xss") || strings.Contains(hay, "reflected") || strings.Contains(hay, "reflection") {
 		return true
 	}
-	return strings.Contains(hay, "xss") || strings.Contains(hay, "reflected")
+	return strings.EqualFold(strings.TrimSpace(playbook), "reflection")
+}
+
+func highImpactLead(title, body, playbook string) bool {
+	hay := strings.ToLower(playbook + " " + title + " " + body)
+	for _, k := range []string{"idor", "bola", "authz", "ssrf", "graphql", ".env", "takeover", "jwt"} {
+		if strings.Contains(hay, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Toolbox) rejectFloodLead(ctx context.Context, targetID string, a flagLeadArgs) error {
-	if t == nil || t.db == nil || !looksLikeXSSNoise(a.Title, a.Body, a.Playbook) {
+	if t == nil || t.db == nil {
 		return nil
 	}
-	var n int
+	if looksLikeXSSNoise(a.Title, a.Body, a.Playbook) {
+		var n int
+		_ = t.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM agent_leads WHERE target_id=? AND status='pending' AND (
+				lower(COALESCE(playbook,'')) = 'reflection'
+				OR lower(title) LIKE '%xss%' OR lower(body) LIKE '%reflected%' OR lower(title) LIKE '%reflection%'
+			)`, targetID).Scan(&n)
+		if n >= 3 {
+			return fmt.Errorf("inbox already has %d XSS/reflection leads — hunt a different class from the dossier (authz object, JS-only API, leftover admin, odd internal host, watchtower diff)", n)
+		}
+	}
+	if highImpactLead(a.Title, a.Body, a.Playbook) {
+		return nil
+	}
+	var day int
 	_ = t.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM agent_leads WHERE target_id=? AND status='pending' AND (
-			lower(COALESCE(playbook,'')) IN ('candidates','reflection')
-			OR lower(title) LIKE '%xss%' OR lower(body) LIKE '%reflected%'
-		)`, targetID).Scan(&n)
-	if n >= 6 {
-		return fmt.Errorf("inbox already has %d XSS/reflection leads — hunt a different class from the dossier (authz object, JS-only API, leftover admin, odd internal host, watchtower diff)", n)
+		SELECT COUNT(*) FROM agent_leads WHERE target_id=? AND created_at >= datetime('now','-1 day')`, targetID).Scan(&day)
+	if day >= 12 {
+		return fmt.Errorf("already filed %d leads in 24h — stop_hunt and pick a new class next cycle (authz / JS-only API / leftover / odd host)", day)
 	}
 	return nil
 }

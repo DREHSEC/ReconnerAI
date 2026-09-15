@@ -79,6 +79,48 @@ func TestRuntimeToolThenMessage(t *testing.T) {
 	}
 }
 
+func TestHunterUnlimitedIterations(t *testing.T) {
+	db := testDB(t)
+	tid := insertTarget(t, db)
+	cfg := &config.Config{AIEnabled: true, XAIAPIKeyField: "k", AIMaxIterations: 2, AIHunterIterations: 0}
+	rt := New(cfg, db, nil, nil)
+	steps := make([]CompletionResponse, 0, 6)
+	for i := 0; i < 5; i++ {
+		steps = append(steps, CompletionResponse{Calls: []FunctionCall{{
+			CallID: "c" + string(rune('1'+i)), Name: "scan_status", Arguments: "{}",
+		}}})
+	}
+	steps = append(steps, CompletionResponse{Text: "thesis done"})
+	rt.SetCompleter(&scriptedCompleter{steps: steps})
+	if _, err := rt.start(context.Background(), tid, 0, modeAlwaysOn, "SURFACE DOSSIER: hunt one thesis", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, rt, tid)
+	th, err := rt.store.GetThreadByMode(context.Background(), tid, modeAlwaysOn)
+	if err != nil || th == nil {
+		t.Fatalf("hunter thread: %v %v", th, err)
+	}
+	var last string
+	calls := 0
+	for _, m := range th.Messages {
+		if m.Role == roleCall {
+			calls++
+		}
+		if m.Role == roleAssistant {
+			last = m.Content
+		}
+	}
+	if calls < 5 {
+		t.Fatalf("hunter should continue past copilot cap, calls=%d last=%q", calls, last)
+	}
+	if contains(last, "iteration cap") {
+		t.Fatalf("hunter must not hit a step cap, last=%q", last)
+	}
+	if last != "thesis done" {
+		t.Fatalf("last=%q", last)
+	}
+}
+
 func TestRuntimeIterationCap(t *testing.T) {
 	db := testDB(t)
 	tid := insertTarget(t, db)

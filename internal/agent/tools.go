@@ -125,7 +125,7 @@ func toolDefsFor(includeStop, includeExec, includeBrowser bool) []ToolDef {
 		}, "modules")),
 	}
 	if includeExec {
-		defs = append(defs, fn("exec", "Run a bash command inside the Reconner container. For local toolchain (nuclei -tl, jq, grep templates) and in-scope CLIs (curl/httpx/nmap against Reconner targets). Out-of-scope hosts and cloud metadata are rejected. Secrets are stripped from the environment. Output is truncated. Hunter commands that mention a host count against the per-host HTTP budget.", objectSchema(map[string]any{
+		defs = append(defs, fn("exec", "Run a bash command inside the Reconner container. For local toolchain (nuclei, jq, grep on files in /tmp) and in-scope CLIs (nmap, httpx, nuclei -u). Hunter: do NOT use curl/wget — use http_request. Echo-only commands are rejected. Out-of-scope hosts and cloud metadata are rejected. Secrets are stripped. Output is truncated.", objectSchema(map[string]any{
 			"command": strProp("Shell command (bash -lc)"),
 			"cwd":     strProp("Optional working directory. /data is not allowed."),
 		}, "command")))

@@ -32,6 +32,45 @@ func TestEnsureThreadKeepsHunterAndCopilotSeparate(t *testing.T) {
 	}
 }
 
+func TestPickPlaybookSkipsClosedReflection(t *testing.T) {
+	db := testDB(t)
+	tid := insertTarget(t, db)
+	if _, err := db.Exec(`INSERT INTO parameters (id, target_id, url, parameter, value, source, is_reflected) VALUES (?,?,?,?,?,?,1)`,
+		uuid.New().String(), tid, "https://app.example.test/search", "q", "x", "html"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO agent_hunter_suppress (id, target_id, url, parameter, kind, until)
+		VALUES (?,?,?,?, 'dead_end', datetime('now','+7 days'))`,
+		uuid.New().String(), tid, "https://app.example.test/search", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO directory_findings (id, target_id, url, status_code) VALUES (?,?,?,200)`,
+		uuid.New().String(), tid, "https://app.example.test/.git"); err != nil {
+		t.Fatal(err)
+	}
+	pb := pickPlaybook(context.Background(), db, tid)
+	if pb.Name == "reflection" {
+		t.Fatalf("suppressed reflected params must not force reflection, got %s", pb.Name)
+	}
+}
+
+func TestPickPlaybookSkipsXSSOnlyCandidates(t *testing.T) {
+	db := testDB(t)
+	tid := insertTarget(t, db)
+	if _, err := db.Exec(`INSERT INTO vuln_findings (id, target_id, type, severity, url, status) VALUES (?,?,?,?,?, 'candidate')`,
+		uuid.New().String(), tid, "xss", "high", "https://app.example.test/q"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO directory_findings (id, target_id, url, status_code) VALUES (?,?,?,200)`,
+		uuid.New().String(), tid, "https://app.example.test/.git"); err != nil {
+		t.Fatal(err)
+	}
+	pb := pickPlaybook(context.Background(), db, tid)
+	if pb.Name == "candidates" {
+		t.Fatalf("xss-only candidates must not lock the candidates lane, got %s", pb.Name)
+	}
+}
+
 func TestPickPlaybookWatchtower(t *testing.T) {
 	db := testDB(t)
 	tid := insertTarget(t, db)
@@ -150,6 +189,26 @@ func TestMaybeFileLeadFromSummary(t *testing.T) {
 	empty, err := tb.maybeFileLeadFromSummary(context.Background(), tid, "cycle ok", "leftovers")
 	if err != nil || empty != "" {
 		t.Fatalf("empty summary should not file, got %s err=%v", empty, err)
+	}
+	capSum := "Stopped at the iteration cap (28). See https://app.example.test/admin"
+	capID, err := tb.maybeFileLeadFromSummary(context.Background(), tid, capSum, "leftovers")
+	if err != nil || capID != "" {
+		t.Fatalf("iteration-cap summary must not file, got %s err=%v", capID, err)
+	}
+}
+
+func TestNextHunterTargetPicksRunningWhenSkipOff(t *testing.T) {
+	db := testDB(t)
+	_ = insertTarget(t, db)
+	running := uuid.New().String()
+	if _, err := db.Exec(`INSERT INTO targets (id, domain, priority, scan_status) VALUES (?,?, 'critical', 'running')`, running, "busy.example.test"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{AIEnabled: true, XAIAPIKeyField: "k", AIHunterEnabled: true, AIHunterIntervalSeconds: 15, AIHunterSkipRunning: false}
+	rt := New(cfg, db, nil, nil)
+	id, _ := rt.nextHunterTarget(context.Background())
+	if id != running {
+		t.Fatalf("skip-running off should pick the critical running target, got %s", id)
 	}
 }
 

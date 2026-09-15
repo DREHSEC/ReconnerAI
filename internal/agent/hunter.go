@@ -164,7 +164,7 @@ func (r *Runtime) hunterTick(ctx context.Context) {
 		r.finishHunterCycle(id, domain, pb.Name, "could not start: "+err.Error())
 		return
 	}
-	cycleMin := 12
+	cycleMin := 90
 	if r.cfg != nil && r.cfg.AIHunterCycleMinutes > 0 {
 		cycleMin = r.cfg.AIHunterCycleMinutes
 	}
@@ -174,6 +174,12 @@ func (r *Runtime) hunterTick(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(2 * time.Second):
+		}
+	}
+	if r.Busy(id) {
+		r.Cancel(id)
+		for i := 0; i < 25 && r.Busy(id); i++ {
+			time.Sleep(200 * time.Millisecond)
 		}
 	}
 	summary := r.lastHunterAssistant(ctx, id)
@@ -214,7 +220,7 @@ func (r *Runtime) nextHunterTarget(ctx context.Context) (id, domain string) {
 		if r.Busy(c.id) {
 			continue
 		}
-		skipRun := true
+		skipRun := false
 		if r.cfg != nil {
 			skipRun = r.cfg.AIHunterSkipRunning
 		}

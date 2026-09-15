@@ -158,7 +158,7 @@ func TestExecAllowedToHunter(t *testing.T) {
 	db := testDB(t)
 	tb := NewToolbox(db, nil, nil)
 	tid := insertTarget(t, db)
-	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"echo hunter-exec-ok"}`, CallEnv{Mode: modeAlwaysOn})
+	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"uname -s"}`, CallEnv{Mode: modeAlwaysOn})
 	var out struct {
 		Exit   int    `json:"exit"`
 		Output string `json:"output"`
@@ -166,7 +166,7 @@ func TestExecAllowedToHunter(t *testing.T) {
 	if err := json.Unmarshal([]byte(res.JSON), &out); err != nil {
 		t.Fatal(res.JSON)
 	}
-	if out.Exit != 0 || !strings.Contains(out.Output, "hunter-exec-ok") {
+	if out.Exit != 0 || strings.TrimSpace(out.Output) == "" {
 		t.Fatalf("hunter should get exec, got %s", res.JSON)
 	}
 }
@@ -179,9 +179,57 @@ func TestHunterExecHostRateLimit(t *testing.T) {
 	}, max: 2}
 	tid := insertTarget(t, db)
 	res := tb.Dispatch(context.Background(), tid, "exec",
-		`{"command":"curl -sS https://app.example.test/"}`, CallEnv{Mode: modeAlwaysOn})
+		`{"command":"nuclei -u https://app.example.test/"}`, CallEnv{Mode: modeAlwaysOn})
 	if !strings.Contains(res.JSON, "budget") {
 		t.Fatalf("expected hunter budget, got %s", res.JSON)
+	}
+}
+
+func TestHunterExecRejectsCurl(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tid := insertTarget(t, db)
+	res := tb.Dispatch(context.Background(), tid, "exec",
+		`{"command":"curl -sS https://app.example.test/"}`, CallEnv{Mode: modeAlwaysOn})
+	if !strings.Contains(res.JSON, "http_request") {
+		t.Fatalf("hunter curl must be rejected, got %s", res.JSON)
+	}
+}
+
+func TestHunterExecRejectsEcho(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tid := insertTarget(t, db)
+	res := tb.Dispatch(context.Background(), tid, "exec",
+		`{"command":"echo hunter-exec-ok"}`, CallEnv{Mode: modeAlwaysOn})
+	if !strings.Contains(res.JSON, "no-op") {
+		t.Fatalf("hunter echo-only must be rejected, got %s", res.JSON)
+	}
+}
+
+func TestCopilotExecStillAllowsCurlShape(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tid := insertTarget(t, db)
+	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"echo copilot-ok"}`, CallEnv{Mode: modeChat})
+	if !strings.Contains(res.JSON, "copilot-ok") {
+		t.Fatalf("copilot echo should still run, got %s", res.JSON)
+	}
+}
+
+func TestPipelineBins(t *testing.T) {
+	got := pipelineBins(`curl -s https://x.test | jq .`)
+	if len(got) != 2 || got[0] != "curl" || got[1] != "jq" {
+		t.Fatalf("got %v", got)
+	}
+	if err := hunterExecPolicy(`nuclei -tl`); err != nil {
+		t.Fatal(err)
+	}
+	if err := hunterExecPolicy(`jq . /tmp/x.json`); err != nil {
+		t.Fatal(err)
+	}
+	if err := hunterExecPolicy(`curl -s https://app.example.test/`); err == nil {
+		t.Fatal("curl must fail hunter policy")
 	}
 }
 
@@ -192,8 +240,8 @@ func TestHunterExecLocalIgnoresHTTPBudget(t *testing.T) {
 		"app.example.test": {window: time.Now(), n: 2},
 	}, max: 2}
 	tid := insertTarget(t, db)
-	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"echo local-ok"}`, CallEnv{Mode: modeAlwaysOn})
-	if strings.Contains(res.JSON, "budget") || !strings.Contains(res.JSON, "local-ok") {
+	res := tb.Dispatch(context.Background(), tid, "exec", `{"command":"uname -s"}`, CallEnv{Mode: modeAlwaysOn})
+	if strings.Contains(res.JSON, "budget") || strings.Contains(res.JSON, "error") {
 		t.Fatalf("local exec should not consume HTTP budget, got %s", res.JSON)
 	}
 }

@@ -298,11 +298,11 @@ export default function System() {
               <AgentField label="Hunter interval (s)" hint="Pause between targets (min 15)">
                 <input type="number" min={15} className="input font-mono text-xs" value={agentDraft.ai_hunter_interval_seconds ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_interval_seconds: e.target.value }))} />
               </AgentField>
-              <AgentField label="Hunter iterations" hint="Steps in one always-on cycle">
-                <input type="number" min={1} max={200} className="input font-mono text-xs" value={agentDraft.ai_hunter_iterations ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_iterations: e.target.value }))} />
+              <AgentField label="Hunter iterations" hint="0 = unlimited (stop_hunt or cycle wall clock)">
+                <input type="number" min={0} max={5000} className="input font-mono text-xs" value={agentDraft.ai_hunter_iterations ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_iterations: e.target.value }))} />
               </AgentField>
-              <AgentField label="Cycle cap (min)" hint="Wall clock per hunter cycle">
-                <input type="number" min={1} max={120} className="input font-mono text-xs" value={agentDraft.ai_hunter_cycle_minutes ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_cycle_minutes: e.target.value }))} />
+              <AgentField label="Cycle cap (min)" hint="Wall clock per hunter cycle (only hard stop)">
+                <input type="number" min={1} max={360} className="input font-mono text-xs" value={agentDraft.ai_hunter_cycle_minutes ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_cycle_minutes: e.target.value }))} />
               </AgentField>
               <AgentField label="Hunter HTTP / min / host" hint="Always-on budget for http_request, browser_open, exec-with-hosts">
                 <input type="number" min={1} max={600} className="input font-mono text-xs" value={agentDraft.ai_hunter_http_per_min ?? ''} onChange={e => setAgentDraft(d => ({ ...d, ai_hunter_http_per_min: e.target.value }))} />
@@ -405,7 +405,7 @@ function agentDraftFrom(ai: AIStatus): Record<string, string> {
   return {
     ai_enabled: ai.enabled ? 'true' : 'false',
     ai_hunter_enabled: ai.hunter?.enabled ? 'true' : 'false',
-    ai_hunter_skip_running: (ai.hunter_skip_running ?? true) ? 'true' : 'false',
+    ai_hunter_skip_running: (ai.hunter_skip_running ?? false) ? 'true' : 'false',
     ai_model: ai.model || 'GLM-5.3-Flash',
     ai_base_url: ai.base_url || '',
     ai_max_iterations: String(ai.max_iterations ?? 40),
@@ -414,10 +414,10 @@ function agentDraftFrom(ai: AIStatus): Record<string, string> {
     ai_http_timeout_seconds: String(ai.http_timeout_seconds ?? 20),
     ai_http_body_cap: String(ai.http_body_cap ?? 16384),
     ai_hunter_interval_seconds: String(ai.hunter?.interval_seconds ?? 90),
-    ai_hunter_iterations: String(ai.hunter?.iterations ?? 28),
+    ai_hunter_iterations: String(ai.hunter?.iterations ?? 0),
     ai_hunter_http_per_min: String(ai.hunter_http_per_min ?? 20),
     ai_hunter_scan_cap: String(ai.hunter_scan_cap ?? 2),
-    ai_hunter_cycle_minutes: String(ai.hunter_cycle_minutes ?? 12),
+    ai_hunter_cycle_minutes: String(ai.hunter_cycle_minutes ?? 90),
     ai_hunter_dead_end_hours: String(ai.hunter_dead_end_hours ?? 168),
     ai_hunter_waf_minutes: String(ai.hunter_waf_minutes ?? 30),
     ai_exec_enabled: (ai.exec_enabled ?? true) ? 'true' : 'false',

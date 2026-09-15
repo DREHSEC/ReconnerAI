@@ -38,11 +38,11 @@ func TestSurfaceDossierClustersCandidatesAndOddHosts(t *testing.T) {
 	}
 }
 
-func TestRejectFloodLeadAfterSixXSS(t *testing.T) {
+func TestRejectFloodLeadAfterThreeXSS(t *testing.T) {
 	db := testDB(t)
 	tb := NewToolbox(db, nil, nil)
 	tid := insertTarget(t, db)
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 3; i++ {
 		if _, err := db.Exec(`INSERT INTO agent_leads (id, target_id, title, body, playbook, status) VALUES (?,?,?,?, 'reflection', 'pending')`,
 			uuid.New().String(), tid, "xss "+uuid.New().String(), "reflected q"); err != nil {
 			t.Fatal(err)
@@ -57,6 +57,25 @@ func TestRejectFloodLeadAfterSixXSS(t *testing.T) {
 	}
 	if err := tb.rejectFloodLead(context.Background(), tid, flagLeadArgs{Title: "BOLA on /orders", Body: "user B read user A", Playbook: "authz"}); err != nil {
 		t.Fatalf("authz lead must pass: %v", err)
+	}
+}
+
+func TestRejectFloodLeadDailyCap(t *testing.T) {
+	db := testDB(t)
+	tb := NewToolbox(db, nil, nil)
+	tid := insertTarget(t, db)
+	for i := 0; i < 12; i++ {
+		if _, err := db.Exec(`INSERT INTO agent_leads (id, target_id, title, body, playbook, status, created_at) VALUES (?,?,?,?, 'js_shadow', 'pending', CURRENT_TIMESTAMP)`,
+			uuid.New().String(), tid, "note "+uuid.New().String(), "mapped an API"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := tb.rejectFloodLead(context.Background(), tid, flagLeadArgs{Title: "another API", Body: "yet more endpoints", Playbook: "js_shadow"})
+	if err == nil || !strings.Contains(err.Error(), "24h") {
+		t.Fatalf("expected daily cap, got %v", err)
+	}
+	if err := tb.rejectFloodLead(context.Background(), tid, flagLeadArgs{Title: "SSRF on grpc-debug", Body: "dial oracle", Playbook: "leftovers"}); err != nil {
+		t.Fatalf("high-impact must pass daily cap: %v", err)
 	}
 }
 

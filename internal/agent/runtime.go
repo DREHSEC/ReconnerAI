@@ -524,12 +524,15 @@ func (r *Runtime) loop(ctx context.Context, targetID, threadID, runID, mode stri
 		system = huntSystemPrompt
 	case modeAlwaysOn:
 		system = alwaysOnSystemPrompt
-		if r.cfg != nil && r.cfg.AIHunterIterations > 0 {
+		// 0 = unlimited: stop_hunt, a final assistant message, or the cycle
+		// wall-clock (hunterTick cancels). Do not invent a step cap.
+		maxIt = 0
+		if r.cfg != nil {
 			maxIt = r.cfg.AIHunterIterations
 		}
 	}
 
-	for i := 0; i < maxIt; i++ {
+	for i := 0; maxIt <= 0 || i < maxIt; i++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -632,6 +635,17 @@ func (r *Runtime) loop(ctx context.Context, targetID, threadID, runID, mode stri
 			case <-time.After(huntScanWait):
 			}
 		}
+	}
+	if mode == modeAlwaysOn {
+		// Unlimited hunter: the cycle deadline (or operator cancel) is the
+		// only stop besides stop_hunt. Hitting this branch means maxIt was set.
+		capMsg := "Cycle wall reached without stop_hunt — next cycle should pick up the same thesis."
+		if maxIt > 0 {
+			capMsg = fmt.Sprintf("Stopped at the iteration cap (%d). Review the trace and continue from the copilot if needed.", maxIt)
+		}
+		_, _ = r.store.Append(ctx, threadID, roleAssistant, capMsg, "", "")
+		r.emit(Event{TargetID: targetID, ThreadID: threadID, RunID: runID, Kind: "message", Payload: map[string]string{"content": capMsg}})
+		return nil
 	}
 	capMsg := fmt.Sprintf("Stopped at the iteration cap (%d). Review the trace and continue from the copilot if needed.", maxIt)
 	_, _ = r.store.Append(ctx, threadID, roleAssistant, capMsg, "", "")

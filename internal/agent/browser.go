@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -141,7 +142,7 @@ func (t *Toolbox) ensureBrowser(parent context.Context, targetID string) (*brows
 	// Session lifetime is independent of a single tool-call timeout. CloseBrowser
 	// (or Runtime.release) tears this down.
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), wsURL)
-	tabCtx, tabCancel := chromedp.NewContext(allocCtx)
+	tabCtx, tabCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(quietChromedpError))
 	if err := chromedp.Run(tabCtx); err != nil {
 		tabCancel()
 		allocCancel()
@@ -397,6 +398,21 @@ func clipBrowser(obj map[string]any) map[string]any {
 		obj["text"] = clip(s, 4000)
 	}
 	return obj
+}
+
+// quietChromedpError drops Obscura's default-page detach. chromedp attaches
+// with a new session id; Obscura then emits Target.detachedFromTarget for
+// "page-1-session", which chromedp never registered. Harmless, but it prints
+// ERROR: executor for "page-1-session" doesn't exist on every browser_open.
+func quietChromedpError(format string, args ...any) {
+	if ignoreChromedpSessionNoise(format) {
+		return
+	}
+	log.Printf("ERROR: "+format, args...)
+}
+
+func ignoreChromedpSessionNoise(format string) bool {
+	return strings.Contains(format, "executor for")
 }
 
 func clipAny(v any, n int) any {

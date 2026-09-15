@@ -66,6 +66,10 @@ func (t *Toolbox) maybeFileLeadFromSummary(ctx context.Context, targetID, summar
 	if raw == "" || summaryLooksEmpty(summary) {
 		return "", nil
 	}
+	low := strings.ToLower(summary)
+	if strings.Contains(low, "iteration cap") || strings.Contains(low, "stopped at the iteration") {
+		return "", nil
+	}
 	var existing string
 	_ = t.db.QueryRowContext(ctx, `
 		SELECT id FROM agent_leads WHERE target_id=? AND url=? AND status IN ('pending','confirmed')

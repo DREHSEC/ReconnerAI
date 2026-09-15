@@ -320,7 +320,8 @@ type Config struct {
 	XAIAPIKeyField string `json:"xai_api_key"`
 	// AIHunterEnabled runs a 24/7 background hunter across every target.
 	// AIHunterIntervalSeconds is the pause between picking the next target.
-	// AIHunterIterations caps one always-on cycle (separate from copilot turns).
+	// AIHunterIterations caps one always-on cycle (0 = unlimited; stop_hunt
+	// or the cycle wall-clock ends the run). Separate from copilot turns.
 	AIHunterEnabled         bool `json:"ai_hunter_enabled"`
 	AIHunterIntervalSeconds int  `json:"ai_hunter_interval_seconds"`
 	AIHunterIterations      int  `json:"ai_hunter_iterations"`
@@ -429,8 +430,8 @@ func (c *Config) NormalizeAI() {
 	if c.AIHunterIntervalSeconds <= 0 {
 		c.AIHunterIntervalSeconds = 90
 	}
-	if c.AIHunterIterations <= 0 {
-		c.AIHunterIterations = 28
+	if c.AIHunterIterations < 0 {
+		c.AIHunterIterations = 0
 	}
 	if c.AIMaxTokens <= 0 {
 		c.AIMaxTokens = 8192
@@ -451,7 +452,7 @@ func (c *Config) NormalizeAI() {
 		c.AIHunterScanCap = 2
 	}
 	if c.AIHunterCycleMinutes <= 0 {
-		c.AIHunterCycleMinutes = 12
+		c.AIHunterCycleMinutes = 90
 	}
 	if c.AIHunterDeadEndHours <= 0 {
 		c.AIHunterDeadEndHours = 7 * 24
@@ -610,15 +611,15 @@ func defaultConfig() *Config {
 		AIMaxIterations:         40,
 		AIHunterEnabled:         true,
 		AIHunterIntervalSeconds: 90,
-		AIHunterIterations:      28,
+		AIHunterIterations:      0,
 		AIMaxTokens:             8192,
 		AITimeoutSeconds:        180,
 		AIHTTPTimeoutSeconds:    20,
 		AIHTTPBodyCap:           16384,
 		AIHunterHTTPPerMin:      20,
 		AIHunterScanCap:         2,
-		AIHunterCycleMinutes:    12,
-		AIHunterSkipRunning:     true,
+		AIHunterCycleMinutes:    90,
+		AIHunterSkipRunning:     false,
 		AIHunterDeadEndHours:    7 * 24,
 		AIHunterWAFMinutes:      30,
 		AIExecEnabled:           true,
@@ -741,7 +742,7 @@ func (c *Config) applyEnvOverrides(raw []byte) {
 	}
 	if !jsonHasKey(raw, "ai_hunter_iterations") {
 		if v := strings.TrimSpace(os.Getenv("AI_HUNTER_ITERATIONS")); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 				c.AIHunterIterations = n
 			}
 		}

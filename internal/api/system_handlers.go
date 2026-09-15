@@ -163,7 +163,7 @@ func (h *Handler) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if setInt(body, "ai_hunter_interval_seconds", &h.cfg.AIHunterIntervalSeconds, 15, 86400) {
 			changed = true
 		}
-		if setInt(body, "ai_hunter_iterations", &h.cfg.AIHunterIterations, 1, 200) {
+		if setInt(body, "ai_hunter_iterations", &h.cfg.AIHunterIterations, 0, 5000) {
 			changed = true
 		}
 		if setInt(body, "ai_hunter_http_per_min", &h.cfg.AIHunterHTTPPerMin, 1, 600) {
@@ -172,7 +172,7 @@ func (h *Handler) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if setInt(body, "ai_hunter_scan_cap", &h.cfg.AIHunterScanCap, 1, 10) {
 			changed = true
 		}
-		if setInt(body, "ai_hunter_cycle_minutes", &h.cfg.AIHunterCycleMinutes, 1, 120) {
+		if setInt(body, "ai_hunter_cycle_minutes", &h.cfg.AIHunterCycleMinutes, 1, 360) {
 			changed = true
 		}
 		if setInt(body, "ai_hunter_dead_end_hours", &h.cfg.AIHunterDeadEndHours, 1, 24*30) {

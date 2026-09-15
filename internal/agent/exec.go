@@ -50,6 +50,9 @@ func (t *Toolbox) execCommand(ctx context.Context, targetID, command, cwd string
 		return nil, err
 	}
 	if env.Mode == modeAlwaysOn {
+		if err := hunterExecPolicy(command); err != nil {
+			return nil, err
+		}
 		for _, host := range hostsInCommand(command) {
 			if err := t.limiter().allow(host); err != nil {
 				return nil, err
@@ -137,6 +140,53 @@ func (t *Toolbox) execCommand(ctx context.Context, targetID, command, cwd string
 		res["error"] = fmt.Sprintf("timed out after %s", timeout)
 	}
 	return res, nil
+}
+
+func hunterExecPolicy(command string) error {
+	bins := pipelineBins(command)
+	if len(bins) == 0 {
+		return nil
+	}
+	onlyEcho := true
+	for _, b := range bins {
+		if b != "echo" && b != "printf" && b != "true" {
+			onlyEcho = false
+		}
+		switch b {
+		case "curl", "wget", "httpie", "aria2c":
+			return fmt.Errorf("use http_request (or browser_open) instead of %s — exec is for nuclei, nmap, jq, and local parse", b)
+		}
+	}
+	if onlyEcho {
+		return fmt.Errorf("skip no-op exec — probe with http_request or parse a file you already fetched")
+	}
+	return nil
+}
+
+func pipelineBins(command string) []string {
+	s := command
+	for _, sep := range []string{"&&", "||", "\n", ";"} {
+		s = strings.ReplaceAll(s, sep, "|")
+	}
+	var bins []string
+	for _, part := range strings.Split(s, "|") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		fields := strings.Fields(part)
+		for _, f := range fields {
+			if strings.Contains(f, "=") && !strings.HasPrefix(f, "-") {
+				continue
+			}
+			base := strings.ToLower(filepath.Base(strings.Trim(f, `'"`)))
+			if base != "" {
+				bins = append(bins, base)
+			}
+			break
+		}
+	}
+	return bins
 }
 
 func (t *Toolbox) execScopeCheck(ctx context.Context, targetID, command string) error {

@@ -10,6 +10,18 @@ import (
 	"github.com/recon-platform/internal/config"
 )
 
+func TestIgnoreChromedpSessionNoise(t *testing.T) {
+	if !ignoreChromedpSessionNoise(`executor for %q doesn't exist`) {
+		t.Fatal("should ignore Obscura page-1-session detach")
+	}
+	if !ignoreChromedpSessionNoise(`executor for %q already exists`) {
+		t.Fatal("should ignore duplicate session bookkeeping")
+	}
+	if ignoreChromedpSessionNoise("could not dial %q: %w") {
+		t.Fatal("must still log real CDP failures")
+	}
+}
+
 func TestBrowserOpenOutOfScope(t *testing.T) {
 	db := testDB(t)
 	tb := NewToolbox(db, nil, nil)
